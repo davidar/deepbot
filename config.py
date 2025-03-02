@@ -1,8 +1,15 @@
 import os
 from dotenv import load_dotenv
+import datetime
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Function to get current date and time in a readable format
+def get_current_datetime():
+    """Return the current date and time in a human-readable format."""
+    now = datetime.datetime.now()
+    return now.strftime("%B %d, %Y at %H:%M:%S UTC%z")
 
 # Discord bot token
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")

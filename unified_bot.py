@@ -50,6 +50,9 @@ class DeepBot(commands.Bot):
         # Store conversation history for each channel
         self.conversation_history: Dict[int, List[Dict[str, str]]] = {}
         
+        # Discord message length limit with safety margin
+        self.DISCORD_MESSAGE_LIMIT = 1950  # Discord limit is 2000, leaving 50 chars as safety margin
+        
         # Register commands
         self.add_commands()
         
@@ -87,7 +90,8 @@ class DeepBot(commands.Bot):
             "role": "system",
             "content": config.SYSTEM_PROMPT_TEMPLATE.format(
                 server_name=channel.guild.name if isinstance(channel, discord.TextChannel) else "our DM chat",
-                mode=config.MODE
+                mode=config.MODE,
+                currentDateTime=config.get_current_datetime()
             )
         }
         
@@ -846,12 +850,14 @@ class DeepBot(commands.Bot):
                             if current_time - last_update_time >= 1.0:
                                 # For display, we want to show the thinking process
                                 display_text = accumulated_text
-                                if len(display_text) > 1900:
-                                    # Keep the last 1900 characters for display only
-                                    display_text = "..." + display_text[-1900:]
                                 
                                 # Format the display text with small font only for <think> content
                                 formatted_text = self._format_streaming_text(display_text)
+                                
+                                # Use the same truncation method as the final message
+                                if len(formatted_text) > self.DISCORD_MESSAGE_LIMIT:
+                                    formatted_text = self._truncate_formatted_text(formatted_text, max_length=self.DISCORD_MESSAGE_LIMIT)
+                                    logger.debug(f"Truncated intermediate message to {len(formatted_text)} characters")
                                 
                                 # Only attempt to edit if we have non-empty content
                                 if formatted_text.strip():
@@ -888,9 +894,9 @@ class DeepBot(commands.Bot):
                 final_formatted_text = self._format_streaming_text(accumulated_text)
                 
                 # Truncate the formatted text if it's too long, prioritizing regular content
-                if len(final_formatted_text) > 2000:
+                if len(final_formatted_text) > self.DISCORD_MESSAGE_LIMIT:
                     logger.warning(f"Formatted text exceeds Discord's 2000 character limit ({len(final_formatted_text)} chars)")
-                    final_formatted_text = self._truncate_formatted_text(final_formatted_text)
+                    final_formatted_text = self._truncate_formatted_text(final_formatted_text, max_length=self.DISCORD_MESSAGE_LIMIT)
                     logger.info(f"Truncated text to {len(final_formatted_text)} characters")
                 
                 # Only send if we have non-empty content
