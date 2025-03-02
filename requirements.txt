@@ -1,0 +1,5 @@
+discord.py>=2.0.0
+requests>=2.28.0
+python-dotenv>=0.20.0
+sseclient-py>=1.7.2
+PyNaCl>=1.4.0 
