@@ -73,16 +73,29 @@ class DeepBot(commands.Bot):
                 logger.error(f"Command error: {error}")
                 await ctx.send(f"Error executing command: {error}")
     
-    def _get_system_message(self, channel):
-        """Get the appropriate system message for the channel."""
-        server_name = channel.guild.name if isinstance(channel, discord.TextChannel) else "our DM chat"
-        return {
+    def _get_initial_messages(self, channel):
+        """
+        Get the initial messages for a new conversation, including:
+        - System message customized for the channel
+        - Example conversation from config
+        
+        Returns:
+            List of message dictionaries
+        """
+        # Start with the system message
+        system_message = {
             "role": "system",
             "content": config.SYSTEM_PROMPT_TEMPLATE.format(
-                server_name=server_name,
+                server_name=channel.guild.name if isinstance(channel, discord.TextChannel) else "our DM chat",
                 mode=config.MODE
             )
         }
+        
+        # Create a list with system message and example conversation
+        initial_messages = [system_message]
+        initial_messages.extend(config.EXAMPLE_CONVERSATION)
+        
+        return initial_messages
     
     def add_commands(self):
         """Add bot commands."""
@@ -251,21 +264,9 @@ class DeepBot(commands.Bot):
                 # Format based on role
                 if role == "System":
                     formatted_content = f"*{content}*"
-                elif role == "User" and "Message from " in content:
-                    # Check if this message was directed at the bot
-                    is_directed = "[directed at bot]" in content
-                    content = content.replace(" [directed at bot]", "")
-                    
-                    # Extract username and message content
-                    parts = content.replace("Message from ", "", 1).split(":", 1)
-                    username = parts[0].strip()
-                    msg_content = parts[1].strip()
-                    
-                    # Format with username and highlight if directed at bot
-                    if is_directed:
-                        formatted_content = f"**@{username}**: {msg_content} *(directed at bot)*"
-                    else:
-                        formatted_content = f"**{username}**: {msg_content}"
+                elif role == "User":
+                    # Format user messages - simpler now without "Message from" prefix
+                    formatted_content = f"**User**: {content}"
                 else:
                     formatted_content = content
                 
@@ -288,8 +289,8 @@ class DeepBot(commands.Bot):
             """Temporarily wipe the bot's memory while keeping the system message."""
             channel_id = ctx.channel.id
             if channel_id in self.conversation_history:
-                # Keep only a fresh system message
-                self.conversation_history[channel_id] = [self._get_system_message(ctx.channel)]
+                # Keep only the initial messages (system message and examples)
+                self.conversation_history[channel_id] = self._get_initial_messages(ctx.channel)
                 await ctx.send("🧹 Memory wiped! I'm starting fresh, but I'll keep my personality intact!")
             else:
                 await ctx.send("No conversation history to wipe.")
@@ -376,6 +377,169 @@ class DeepBot(commands.Bot):
         # Join the formatted lines back into a single string
         return '\n'.join(formatted_lines)
     
+    def _truncate_formatted_text(self, formatted_text, max_length=1950):
+        """
+        Intelligently truncate formatted text to fit within Discord's character limit.
+        
+        Prioritizes preserving regular content over thinking sections (small font lines).
+        
+        Args:
+            formatted_text: The text with -# prefixes for thinking sections
+            max_length: Maximum allowed length (default: 1950 to leave some buffer)
+            
+        Returns:
+            Truncated text that fits within the character limit
+        """
+        # If text is already within limit, return it as is
+        if len(formatted_text) <= max_length:
+            return formatted_text
+            
+        # Split into lines
+        lines = formatted_text.split('\n')
+        
+        # Separate thinking lines from regular lines
+        thinking_lines = [line for line in lines if line.startswith("-# ")]
+        regular_lines = [line for line in lines if not line.startswith("-# ")]
+        
+        # Calculate total length of regular content
+        regular_content_length = sum(len(line) + 1 for line in regular_lines)  # +1 for newline
+        
+        # If regular content alone exceeds limit, we need to truncate it
+        if regular_content_length > max_length:
+            # Keep as much regular content as possible
+            result = []
+            current_length = 0
+            
+            for line in regular_lines:
+                line_length = len(line) + 1  # +1 for newline
+                if current_length + line_length <= max_length - 3:  # -3 for "..."
+                    result.append(line)
+                    current_length += line_length
+                else:
+                    # Truncate the last line if needed
+                    remaining = max_length - current_length - 3
+                    if remaining > 0:
+                        result.append(line[:remaining] + "...")
+                    else:
+                        result[-1] = result[-1][:len(result[-1])-3] + "..."
+                    break
+                    
+            return '\n'.join(result)
+        
+        # If we get here, we can keep all regular content and need to trim thinking sections
+        
+        # Calculate how much space we have for thinking sections
+        available_space = max_length - regular_content_length
+        
+        # If we have very little space, just return regular content
+        if available_space < 50:  # Arbitrary threshold
+            return '\n'.join(regular_lines)
+        
+        # We need to select which thinking lines to keep
+        # Strategy: Keep the first few and last few thinking lines
+        
+        # Calculate how many thinking lines we can keep
+        thinking_lines_total_length = sum(len(line) + 1 for line in thinking_lines)
+        
+        if thinking_lines_total_length <= available_space:
+            # We can keep all thinking lines
+            # Reconstruct the original order
+            result = []
+            thinking_index = 0
+            
+            for line in lines:
+                if line.startswith("-# "):
+                    result.append(thinking_lines[thinking_index])
+                    thinking_index += 1
+                else:
+                    result.append(line)
+                    
+            return '\n'.join(result)
+        
+        # We need to truncate thinking sections
+        # Keep first and last thinking blocks intact if possible
+        
+        # Group thinking lines into blocks (consecutive thinking lines)
+        thinking_blocks = []
+        current_block = []
+        
+        for i, line in enumerate(lines):
+            if line.startswith("-# "):
+                current_block.append(line)
+            elif current_block:
+                thinking_blocks.append(current_block)
+                current_block = []
+                
+        # Add the last block if it exists
+        if current_block:
+            thinking_blocks.append(current_block)
+        
+        # If we have multiple thinking blocks, try to keep first and last
+        if len(thinking_blocks) > 1:
+            first_block = thinking_blocks[0]
+            last_block = thinking_blocks[-1]
+            
+            first_block_length = sum(len(line) + 1 for line in first_block)
+            last_block_length = sum(len(line) + 1 for line in last_block)
+            
+            # If we can keep both first and last blocks
+            if first_block_length + last_block_length <= available_space:
+                # Keep first and last blocks, discard middle blocks
+                kept_thinking_lines = first_block + last_block
+                
+                # Reconstruct with regular lines and kept thinking lines
+                result = []
+                kept_thinking_index = 0
+                
+                for line in lines:
+                    if line.startswith("-# "):
+                        if kept_thinking_index < len(kept_thinking_lines):
+                            result.append(kept_thinking_lines[kept_thinking_index])
+                            kept_thinking_index += 1
+                        # Skip thinking lines we're not keeping
+                    else:
+                        result.append(line)
+                
+                return '\n'.join(result)
+            
+            # If we can't keep both blocks intact, prioritize the first block
+            if first_block_length <= available_space:
+                # Keep only the first thinking block
+                result = []
+                in_first_block = True
+                
+                for i, line in enumerate(lines):
+                    if line.startswith("-# "):
+                        if in_first_block and len(result) < len(first_block):
+                            result.append(line)
+                        # Skip other thinking lines
+                    else:
+                        result.append(line)
+                        # Once we hit a regular line after the first thinking block,
+                        # we're no longer in the first block
+                        if in_first_block and any(line == block_line for block_line in first_block):
+                            in_first_block = False
+                
+                return '\n'.join(result)
+        
+        # If we get here, we need a simpler approach: just keep as many thinking lines as will fit
+        # Prioritize keeping the first few thinking lines
+        
+        result = []
+        thinking_length = 0
+        
+        for line in lines:
+            if line.startswith("-# "):
+                line_length = len(line) + 1  # +1 for newline
+                if thinking_length + line_length <= available_space:
+                    result.append(line)
+                    thinking_length += line_length
+                # Skip thinking lines that won't fit
+            else:
+                result.append(line)
+        
+        return '\n'.join(result)
+    
     def _convert_small_font_to_think_tags(self, content):
         """
         Convert small font lines (-# prefix) to <think></think> tags for the LLM.
@@ -429,8 +593,8 @@ class DeepBot(commands.Bot):
         if channel_id in self.conversation_history and self.conversation_history[channel_id]:
             return
         
-        # Initialize with system message from config template
-        self.conversation_history[channel_id] = [self._get_system_message(channel)]
+        # Initialize with system message and example interactions
+        self.conversation_history[channel_id] = self._get_initial_messages(channel)
         
         try:
             # Fetch recent messages from the channel
@@ -446,26 +610,21 @@ class DeepBot(commands.Bot):
                 if message.author == self.user:
                     continue
                 
-                # Format the message
-                username = message.author.display_name
-                content = message.content.strip()
-                
                 # Skip empty messages
+                content = message.content.strip()
                 if not content:
                     continue
+                
+                # Clean up the content by replacing Discord mentions with usernames
+                content = self._clean_message_content(message)
                 
                 # Check if message was directed at the bot
                 is_directed_at_bot = self.user.mentioned_in(message)
                 
-                # Format the message content
-                message_content = f"Message from {username}: {content}"
-                if is_directed_at_bot:
-                    message_content += " [directed at bot]"
-                
-                # Add to our temporary list
+                # Add to our temporary list - simplified format without "Message from" prefix
                 messages.append({
                     "role": "user",
-                    "content": message_content,
+                    "content": content,
                     "timestamp": message.created_at.timestamp(),
                     "id": message.id,
                     "is_directed": is_directed_at_bot
@@ -516,8 +675,8 @@ class DeepBot(commands.Bot):
             
         except Exception as e:
             logger.error(f"Error initializing history for channel {channel.name}: {str(e)}")
-            # Keep the system message at least
-            self.conversation_history[channel_id] = [self._get_system_message(channel)]
+            # Keep the initial messages at least
+            self.conversation_history[channel_id] = self._get_initial_messages(channel)
     
     async def on_message(self, message):
         """Event triggered when a message is received."""
@@ -532,8 +691,8 @@ class DeepBot(commands.Bot):
             if isinstance(message.channel, discord.TextChannel):
                 await self._initialize_channel_history(message.channel)
             else:
-                # For DMs or other channel types, just add a system message
-                self.conversation_history[channel_id] = [self._get_system_message(message.channel)]
+                # For DMs or other channel types, just add initial messages
+                self.conversation_history[channel_id] = self._get_initial_messages(message.channel)
         
         # Check if this message is directed at the bot
         is_dm = isinstance(message.channel, discord.DMChannel)
@@ -566,14 +725,13 @@ class DeepBot(commands.Bot):
         if not content:
             return
             
-        # Add user message to history with metadata to indicate if it was directed at the bot
-        message_content = f"Message from {username}: {content}"
-        if is_directed_at_bot:
-            message_content += " [directed at bot]"
-            
+        # Clean up the content by replacing Discord mentions with usernames
+        content = self._clean_message_content(message)
+        
+        # Add user message to history - simplified format without "Message from" prefix
         self.conversation_history[channel_id].append({
             "role": "user",
-            "content": message_content
+            "content": content
         })
         
         # Trim history if it exceeds the maximum length
@@ -600,6 +758,39 @@ class DeepBot(commands.Bot):
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
             await message.reply(f"Sorry, I encountered an error: {str(e)}")
+    
+    def _clean_message_content(self, message):
+        """
+        Clean up message content by replacing Discord mentions with usernames.
+        
+        Args:
+            message: The Discord message object
+            
+        Returns:
+            Cleaned message content
+        """
+        content = message.content.strip()
+        
+        # Replace user mentions with usernames
+        for user_id in message.mentions:
+            mention_pattern = f'<@!?{user_id.id}>'
+            username = user_id.display_name
+            content = re.sub(mention_pattern, f'@{username}', content)
+        
+        # Replace channel mentions
+        for channel_id in message.channel_mentions:
+            channel_pattern = f'<#{channel_id.id}>'
+            channel_name = channel_id.name
+            content = re.sub(channel_pattern, f'#{channel_name}', content)
+        
+        # Replace role mentions
+        if hasattr(message, 'role_mentions'):
+            for role in message.role_mentions:
+                role_pattern = f'<@&{role.id}>'
+                role_name = role.name
+                content = re.sub(role_pattern, f'@{role_name}', content)
+        
+        return content
     
     async def _handle_streaming_response(self, message, channel_id, clean_content):
         """Handle a streaming response."""
@@ -661,9 +852,18 @@ class DeepBot(commands.Bot):
                                 
                                 # Format the display text with small font only for <think> content
                                 formatted_text = self._format_streaming_text(display_text)
-                                await response_message.edit(content=formatted_text)
-                                last_update_time = current_time
-                                logger.debug(f"Updated message with {len(display_text)} characters at {current_time}")
+                                
+                                # Only attempt to edit if we have non-empty content
+                                if formatted_text.strip():
+                                    try:
+                                        await response_message.edit(content=formatted_text)
+                                        last_update_time = current_time
+                                        logger.debug(f"Updated message with {len(display_text)} characters at {current_time}")
+                                    except discord.errors.HTTPException as e:
+                                        logger.warning(f"Failed to edit message: {str(e)}")
+                                        # Don't raise the error - continue processing
+                                else:
+                                    logger.debug("Skipping empty message update")
                                 
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to decode chunk: {e}")
@@ -676,29 +876,51 @@ class DeepBot(commands.Bot):
             logger.info(f"Final response length: {len(accumulated_text)} characters")
             
             # Final update
-            if accumulated_text:
+            if accumulated_text and accumulated_text.strip():
                 # Delete the thinking message
                 try:
                     await response_message.delete()
-                except:
-                    pass
+                except discord.errors.HTTPException as e:
+                    logger.warning(f"Failed to delete thinking message: {str(e)}")
+                    # Continue even if delete fails
                 
                 # Format the final text with small font for think blocks
                 final_formatted_text = self._format_streaming_text(accumulated_text)
                 
-                # Send the final response as a new message
-                final_message = await message.reply(final_formatted_text)
+                # Truncate the formatted text if it's too long, prioritizing regular content
+                if len(final_formatted_text) > 2000:
+                    logger.warning(f"Formatted text exceeds Discord's 2000 character limit ({len(final_formatted_text)} chars)")
+                    final_formatted_text = self._truncate_formatted_text(final_formatted_text)
+                    logger.info(f"Truncated text to {len(final_formatted_text)} characters")
                 
-                # Add the complete response to conversation history WITH the think tags
-                logger.info(f"Adding complete response to history (length: {len(accumulated_text)})")
-                
-                self.conversation_history[channel_id].append({
-                    "role": "assistant",
-                    "content": accumulated_text
-                })
+                # Only send if we have non-empty content
+                if final_formatted_text.strip():
+                    try:
+                        final_message = await message.reply(final_formatted_text)
+                        
+                        # Add the complete response to conversation history WITH the think tags
+                        logger.info(f"Adding complete response to history (length: {len(accumulated_text)})")
+                        
+                        self.conversation_history[channel_id].append({
+                            "role": "assistant",
+                            "content": accumulated_text
+                        })
+                    except discord.errors.HTTPException as e:
+                        logger.error(f"Failed to send final message: {str(e)}")
+                        await message.reply("*Error: Failed to send response due to Discord limitations*")
+                else:
+                    logger.warning("Final formatted text was empty")
+                    await message.reply("*Error: Generated response was empty*")
             else:
                 logger.warning("No response text accumulated")
-                await response_message.edit(content="*No response generated*")
+                try:
+                    await response_message.edit(content="*No response generated*")
+                except discord.errors.HTTPException as e:
+                    logger.warning(f"Failed to edit thinking message: {str(e)}")
+                    try:
+                        await message.reply("*Error: No response generated*")
+                    except discord.errors.HTTPException:
+                        logger.error("Failed to send any error message")
                 
         except Exception as e:
             error_message = f"Error in streaming response: {str(e)}"
