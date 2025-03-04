@@ -799,144 +799,111 @@ class DeepBot(commands.Bot):
     
     async def _handle_streaming_response(self, message, channel_id, clean_content):
         """Handle a streaming response."""
-        # Create a typing context that we'll exit explicitly when done
-        typing = message.channel.typing()
-        await typing.__aenter__()
-        
-        try:
-            logger.info(f"Starting streaming response for channel {channel_id}")
-            logger.info(f"History length: {len(self.conversation_history[channel_id])} messages")
-            logger.info(f"Max tokens setting: {config.MAX_TOKENS}")
-            
-            # Log the full request payload
-            request_payload = {
-                "messages": self.conversation_history[channel_id],
-                "model": config.MODEL_NAME,
-                "temperature": config.TEMPERATURE,
-                "max_tokens": config.MAX_TOKENS if config.MAX_TOKENS != -1 else None,
-                "top_p": config.TOP_P,
-                "presence_penalty": config.PRESENCE_PENALTY,
-                "frequency_penalty": config.FREQUENCY_PENALTY,
-                "seed": config.SEED if config.SEED != -1 else None,
-                "stream": True
-            }
-            logger.info(f"API Request payload: {json.dumps(request_payload, indent=2)}")
-            
-            sse_client = self.api_client.chat_completion(**request_payload)
-            
-            # Create initial response message
-            response_message = await message.reply("_Thinking..._")
-            accumulated_text = ""
-            last_update_time = time.time()
-            chunk_count = 0
-            
-            # Process streaming response
-            for event in sse_client.events():
-                try:
-                    chunk_count += 1
-                    data = json.loads(event.data)
-                    logger.debug(f"Received chunk {chunk_count}: {data}")
+        # Start typing indicator
+        async with message.channel.typing():
+            try:
+                logger.info(f"Starting streaming response for channel {channel_id}")
+                logger.info(f"History length: {len(self.conversation_history[channel_id])} messages")
+                logger.info(f"Max tokens setting: {config.MAX_TOKENS}")
+                
+                # Log the full request payload
+                request_payload = {
+                    "messages": self.conversation_history[channel_id],
+                    "model": config.MODEL_NAME,
+                    "temperature": config.TEMPERATURE,
+                    "max_tokens": config.MAX_TOKENS if config.MAX_TOKENS != -1 else None,
+                    "top_p": config.TOP_P,
+                    "presence_penalty": config.PRESENCE_PENALTY,
+                    "frequency_penalty": config.FREQUENCY_PENALTY,
+                    "seed": config.SEED if config.SEED != -1 else None,
+                    "stream": True
+                }
+                logger.info(f"API Request payload: {json.dumps(request_payload, indent=2)}")
+                
+                sse_client = self.api_client.chat_completion(**request_payload)
+                
+                # Variables to track streaming state
+                accumulated_text = ""  # Current chunk being built
+                full_response = ""    # Complete response for history
+                chunk_count = 0
+                is_final = False
+                
+                # Process streaming response
+                for event in sse_client.events():
+                    try:
+                        chunk_count += 1
+                        
+                        # Handle [DONE] message specially
+                        if event.data == "[DONE]":
+                            is_final = True
+                            continue
+                            
+                        data = json.loads(event.data)
+                        logger.debug(f"Received chunk {chunk_count}: {data}")
+                        
+                        if "choices" in data and len(data["choices"]) > 0:
+                            # Check if this is the final chunk
+                            if data["choices"][0].get("finish_reason") is not None:
+                                is_final = True
+                            
+                            if "delta" in data["choices"][0] and "content" in data["choices"][0]["delta"]:
+                                content = data["choices"][0]["delta"]["content"]
+                                accumulated_text += content
+                                full_response += content
+                                
+                                # Log every 100 chunks
+                                if chunk_count % 100 == 0:
+                                    logger.info(f"Processed {chunk_count} chunks, current length: {len(full_response)}")
+                                
+                                # Check for newlines in accumulated text
+                                while '\n' in accumulated_text:
+                                    # Split at first newline
+                                    to_send, accumulated_text = accumulated_text.split('\n', 1)
+                                    
+                                    # Format the text (for think tags)
+                                    formatted_text = self._format_streaming_text(to_send)
+                                    
+                                    # Only send if we have non-empty content
+                                    if formatted_text.strip():
+                                        try:
+                                            await message.channel.send(formatted_text)
+                                            # Start new typing indicator if not the final chunk
+                                            if not is_final:
+                                                async with message.channel.typing():
+                                                    pass  # Just to restart the typing indicator
+                                        except discord.errors.HTTPException as e:
+                                            logger.warning(f"Failed to send message chunk: {str(e)}")
+                                    
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to decode chunk: {e}: {repr(event.data)}")
+                        continue
+                    except Exception as e:
+                        logger.error(f"Error processing chunk: {str(e)}")
+                        continue
+                
+                logger.info(f"Stream completed. Total chunks: {chunk_count}")
+                logger.info(f"Final response length: {len(full_response)} characters")
+                
+                # Send any remaining accumulated text
+                if accumulated_text and accumulated_text.strip():
+                    formatted_text = self._format_streaming_text(accumulated_text)
+                    if formatted_text.strip():
+                        try:
+                            await message.channel.send(formatted_text)
+                        except discord.errors.HTTPException as e:
+                            logger.error(f"Failed to send final chunk: {str(e)}")
+                
+                # Add the complete response to conversation history WITH the think tags
+                self.conversation_history[channel_id].append({
+                    "role": "assistant",
+                    "content": full_response
+                })
                     
-                    if "choices" in data and len(data["choices"]) > 0:
-                        if "delta" in data["choices"][0] and "content" in data["choices"][0]["delta"]:
-                            content = data["choices"][0]["delta"]["content"]
-                            accumulated_text += content
-                            
-                            # Log every 100 chunks
-                            if chunk_count % 100 == 0:
-                                logger.info(f"Processed {chunk_count} chunks, current length: {len(accumulated_text)}")
-                            
-                            # Update message every second
-                            current_time = time.time()
-                            if current_time - last_update_time >= 1.0:
-                                # For display, we want to show the thinking process
-                                display_text = accumulated_text
-                                
-                                # Format the display text with small font only for <think> content
-                                formatted_text = self._format_streaming_text(display_text)
-                                
-                                # Use the same truncation method as the final message
-                                if len(formatted_text) > self.DISCORD_MESSAGE_LIMIT:
-                                    formatted_text = self._truncate_formatted_text(formatted_text, max_length=self.DISCORD_MESSAGE_LIMIT)
-                                    logger.debug(f"Truncated intermediate message to {len(formatted_text)} characters")
-                                
-                                # Only attempt to edit if we have non-empty content
-                                if formatted_text.strip():
-                                    try:
-                                        await response_message.edit(content=formatted_text)
-                                        last_update_time = current_time
-                                        logger.debug(f"Updated message with {len(display_text)} characters at {current_time}")
-                                    except discord.errors.HTTPException as e:
-                                        logger.warning(f"Failed to edit message: {str(e)}")
-                                        # Don't raise the error - continue processing
-                                else:
-                                    logger.debug("Skipping empty message update")
-                                
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to decode chunk: {e}")
-                    continue
-                except Exception as e:
-                    logger.error(f"Error processing chunk: {str(e)}")
-                    continue
-            
-            logger.info(f"Stream completed. Total chunks: {chunk_count}")
-            logger.info(f"Final response length: {len(accumulated_text)} characters")
-            
-            # Final update
-            if accumulated_text and accumulated_text.strip():
-                # Delete the thinking message
-                try:
-                    await response_message.delete()
-                except discord.errors.HTTPException as e:
-                    logger.warning(f"Failed to delete thinking message: {str(e)}")
-                    # Continue even if delete fails
-                
-                # Format the final text with small font for think blocks
-                final_formatted_text = self._format_streaming_text(accumulated_text)
-                
-                # Truncate the formatted text if it's too long, prioritizing regular content
-                if len(final_formatted_text) > self.DISCORD_MESSAGE_LIMIT:
-                    logger.warning(f"Formatted text exceeds Discord's 2000 character limit ({len(final_formatted_text)} chars)")
-                    final_formatted_text = self._truncate_formatted_text(final_formatted_text, max_length=self.DISCORD_MESSAGE_LIMIT)
-                    logger.info(f"Truncated text to {len(final_formatted_text)} characters")
-                
-                # Only send if we have non-empty content
-                if final_formatted_text.strip():
-                    try:
-                        final_message = await message.reply(final_formatted_text)
-                        
-                        # Add the complete response to conversation history WITH the think tags
-                        logger.info(f"Adding complete response to history (length: {len(accumulated_text)})")
-                        
-                        self.conversation_history[channel_id].append({
-                            "role": "assistant",
-                            "content": accumulated_text
-                        })
-                    except discord.errors.HTTPException as e:
-                        logger.error(f"Failed to send final message: {str(e)}")
-                        await message.reply("*Error: Failed to send response due to Discord limitations*")
-                else:
-                    logger.warning("Final formatted text was empty")
-                    await message.reply("*Error: Generated response was empty*")
-            else:
-                logger.warning("No response text accumulated")
-                try:
-                    await response_message.edit(content="*No response generated*")
-                except discord.errors.HTTPException as e:
-                    logger.warning(f"Failed to edit thinking message: {str(e)}")
-                    try:
-                        await message.reply("*Error: No response generated*")
-                    except discord.errors.HTTPException:
-                        logger.error("Failed to send any error message")
-                
-        except Exception as e:
-            error_message = f"Error in streaming response: {str(e)}"
-            logger.error(error_message)
-            logger.error(f"Full error details: {repr(e)}")
-            await message.reply(error_message)
-        finally:
-            # Explicitly stop the typing indicator when we're done
-            await typing.__aexit__(None, None, None)
+            except Exception as e:
+                error_message = f"Error in streaming response: {str(e)}"
+                logger.error(error_message)
+                logger.error(f"Full error details: {repr(e)}")
+                await message.channel.send(error_message)
 
 def run_bot():
     """Run the bot."""
@@ -944,4 +911,4 @@ def run_bot():
     bot.run(config.DISCORD_TOKEN)
 
 if __name__ == "__main__":
-    run_bot() 
+    run_bot()
