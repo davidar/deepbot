@@ -318,6 +318,7 @@ class DeepBot(commands.Bot):
         
         for guild in self.guilds:
             logger.info(f"Initializing history for guild: {guild.name}")
+            break
             for channel in guild.text_channels:
                 if channel.permissions_for(guild.me).read_messages:
                     channel_count += 1
@@ -691,11 +692,11 @@ class DeepBot(commands.Bot):
         # Get or initialize conversation history for this channel
         channel_id = message.channel.id
         if channel_id not in self.conversation_history:
-            # For new channels, initialize history by fetching recent messages
-            if isinstance(message.channel, discord.TextChannel):
-                await self._initialize_channel_history(message.channel)
-            else:
-                # For DMs or other channel types, just add initial messages
+            # # For new channels, initialize history by fetching recent messages
+            # if isinstance(message.channel, discord.TextChannel):
+            #     await self._initialize_channel_history(message.channel)
+            # else:
+            #     # For DMs or other channel types, just add initial messages
                 self.conversation_history[channel_id] = self._get_initial_messages(message.channel)
         
         # Check if this message is directed at the bot
