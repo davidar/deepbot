@@ -9,7 +9,7 @@ def load_system_prompt() -> List[str]:
     try:
         with open(SYSTEM_PROMPT_FILE, "r") as f:
             data = f.read()
-            return data.split("\n")
+            return data.strip().split("\n")
     except Exception as e:
         print(f"Error loading system prompt: {e}")
         return []
@@ -19,7 +19,7 @@ def save_system_prompt(lines: List[str]) -> None:
     """Save the system prompt lines to file."""
     try:
         with open(SYSTEM_PROMPT_FILE, "w") as f:
-            f.write("\n".join(lines))
+            f.write("\n".join(lines) + "\n")
     except Exception as e:
         print(f"Error saving system prompt: {e}")
 

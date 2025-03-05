@@ -1,3 +1,4 @@
+import io
 import discord
 from discord.ext import commands
 import json
@@ -8,11 +9,8 @@ from typing import Dict, List
 
 from api_client import OpenAICompatibleClient
 import config
+import system_prompt
 from system_prompt import get_system_prompt
-
-# Import echo backend if needed
-if os.environ.get("USE_ECHO_BACKEND") == "1":
-    from echo_backend import EchoClient
 
 # Set up logging
 logging.basicConfig(
@@ -134,60 +132,6 @@ class DeepBot(commands.Bot):
                 logger.error(f"Error refreshing history: {str(e)}")
                 await ctx.send(f"Error refreshing history: {str(e)}")
 
-        @self.command(name="debug")
-        async def debug_history(ctx):
-            """Debug command to show detailed information about the history initialization process."""
-            if not isinstance(ctx.channel, discord.TextChannel):
-                await ctx.send(
-                    "This command can only be used in text channels, not in DMs."
-                )
-                return
-
-            await ctx.send("Fetching channel messages for debugging...")
-
-            try:
-                channel = ctx.channel
-                message_limit = config.HISTORY_FETCH_LIMIT
-
-                # Count messages in the channel
-                message_count = 0
-                async for _ in channel.history(limit=message_limit):
-                    message_count += 1
-
-                # Count bot messages
-                bot_message_count = 0
-                async for message in channel.history(limit=message_limit):
-                    if message.author == self.user:
-                        bot_message_count += 1
-
-                # Count directed messages
-                directed_count = 0
-                async for message in channel.history(limit=message_limit):
-                    if message.author != self.user and self.user.mentioned_in(message):
-                        directed_count += 1
-
-                # Current history info
-                channel_id = ctx.channel.id
-                current_history_count = 0
-                if channel_id in self.conversation_history:
-                    current_history_count = len(self.conversation_history[channel_id])
-
-                debug_info = (
-                    f"**History Debug Information**\n\n"
-                    f"Channel: `{channel.name}`\n"
-                    f"Messages in channel (limit {message_limit}): `{message_count}`\n"
-                    f"Bot messages: `{bot_message_count}`\n"
-                    f"Messages directed at bot: `{directed_count}`\n"
-                    f"Current history count: `{current_history_count}`\n"
-                    f"History fetch limit: `{config.HISTORY_FETCH_LIMIT}`\n"
-                    f"Max history: `{config.MAX_HISTORY}`\n"
-                )
-
-                await ctx.send(debug_info)
-            except Exception as e:
-                logger.error(f"Error in debug command: {str(e)}")
-                await ctx.send(f"Error in debug command: {str(e)}")
-
         @self.command(name="raw")
         async def raw_history(ctx):
             """Display the raw conversation history for debugging."""
@@ -200,37 +144,15 @@ class DeepBot(commands.Bot):
                 return
 
             history = self.conversation_history[channel_id]
-            raw_text = "**Raw Conversation History**\n\n```json\n"
-            raw_text += json.dumps(history, indent=2)
-            raw_text += "\n```"
+            json_data = json.dumps(history, indent=2)
 
-            # Split into chunks if too long
-            if len(raw_text) > 1900:  # Discord message limit is 2000
-                chunks = [raw_text[i : i + 1900] for i in range(0, len(raw_text), 1900)]
-                for chunk in chunks:
-                    await ctx.send(chunk)
-            else:
-                await ctx.send(raw_text)
-
-        @self.command(name="commands")
-        async def commands_help(ctx):
-            """Display help information."""
-            help_text = (
-                f"**DeepBot Commands**\n\n"
-                f"Mention me with `reset` - Reset the conversation history\n"
-                f"Mention me with `refresh` - Refresh the conversation history from channel\n"
-                f"Mention me with `commands` - Display this help message\n"
-                f"Mention me with `info` - Display bot configuration\n"
-                f"Mention me with `history` - Show current conversation history\n"
-                f"Mention me with `raw` - Show raw conversation history for debugging\n"
-                f"Mention me with `debug` - Show debug information about history\n"
-                f"Mention me with `wipe` - Temporarily wipe the bot's memory while keeping the system message\n"
-                f"Mention me with `prompt` - Show current system prompt\n"
-                f"Mention me with `prompt add <line>` - Add a line to the system prompt\n"
-                f"Mention me with `prompt remove <line>` - Remove a line from the system prompt\n\n"
-                "To chat with me, mention me in a message or send me a direct message."
+            # Create a discord.File object with the JSON data
+            file = discord.File(
+                io.StringIO(json_data),
+                filename=f"conversation_history_{channel_id}.json",
             )
-            await ctx.send(help_text)
+
+            await ctx.send("Here's the raw conversation history:", file=file)
 
         @self.command(name="info")
         async def info_command(ctx):
@@ -318,51 +240,55 @@ class DeepBot(commands.Bot):
         @self.command(name="prompt")
         async def prompt_command(ctx, action: str = None, *, line: str = None):
             """Manage the system prompt."""
-            from system_prompt import (
-                get_system_prompt,
-                add_line,
-                remove_line,
-                load_system_prompt,
-            )
+
+            # Get server name once for all branches
+            def get_server_name(channel):
+                return (
+                    channel.guild.name
+                    if isinstance(channel, discord.TextChannel)
+                    else "DM chat"
+                )
 
             if not action:
                 # Display current prompt
-                current_prompt = get_system_prompt()
+                current_prompt = get_system_prompt(get_server_name(ctx.channel))
                 await ctx.send(
-                    f"**Current System Prompt:**\n```\n{current_prompt}\n```"
+                    f"**Current System Prompt:**\n```\n{current_prompt}\n```\nUse `prompt add <line>` to add a line or `prompt remove <line>` to remove a line."
                 )
                 return
 
             if action.lower() == "add" and line:
                 # Add a new line
-                lines = add_line(line)
+                lines = system_prompt.add_line(line)
                 await ctx.send(
                     f"Added line to system prompt: `{line}`\n\nUpdated prompt now has {len(lines)} lines."
                 )
                 # Update all channels with new system prompt
                 for channel_id in self.conversation_history:
                     if self.conversation_history[channel_id]:
-                        self.conversation_history[channel_id][0][
-                            "content"
-                        ] = get_system_prompt()
+                        channel = self.get_channel(channel_id)
+                        self.conversation_history[channel_id][0]["content"] = (
+                            get_system_prompt(get_server_name(channel))
+                        )
 
             elif action.lower() == "remove" and line:
                 # Remove a line
-                original_lines = load_system_prompt()
+                original_lines = system_prompt.load_system_prompt()
                 if line not in original_lines:
                     await ctx.send(f"Line not found in system prompt: `{line}`")
                     return
 
-                lines = remove_line(line)
+                lines = system_prompt.remove_line(line)
                 await ctx.send(
                     f"Removed line from system prompt: `{line}`\n\nUpdated prompt now has {len(lines)} lines."
                 )
                 # Update all channels with new system prompt
                 for channel_id in self.conversation_history:
                     if self.conversation_history[channel_id]:
-                        self.conversation_history[channel_id][0][
-                            "content"
-                        ] = get_system_prompt()
+                        channel = self.get_channel(channel_id)
+                        self.conversation_history[channel_id][0]["content"] = (
+                            get_system_prompt(get_server_name(channel))
+                        )
 
             else:
                 await ctx.send(
