@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Union, Any
 
 from api_client import OpenAICompatibleClient
 import config
+from system_prompt import get_system_prompt
 
 # Import echo backend if needed
 if os.environ.get("USE_ECHO_BACKEND") == "1":
@@ -88,9 +89,8 @@ class DeepBot(commands.Bot):
         # Start with the system message
         system_message = {
             "role": "system",
-            "content": config.SYSTEM_PROMPT_TEMPLATE.format(
+            "content": get_system_prompt(
                 server_name=channel.guild.name if isinstance(channel, discord.TextChannel) else "our DM chat",
-                mode=config.MODE,
                 currentDateTime=config.get_current_datetime()
             )
         }
@@ -222,7 +222,10 @@ class DeepBot(commands.Bot):
                 f"Mention me with `history` - Show current conversation history\n"
                 f"Mention me with `raw` - Show raw conversation history for debugging\n"
                 f"Mention me with `debug` - Show debug information about history\n"
-                f"Mention me with `wipe` - Temporarily wipe the bot's memory while keeping the system message\n\n"
+                f"Mention me with `wipe` - Temporarily wipe the bot's memory while keeping the system message\n"
+                f"Mention me with `prompt` - Show current system prompt\n"
+                f"Mention me with `prompt add <line>` - Add a line to the system prompt\n"
+                f"Mention me with `prompt remove <line>` - Remove a line from the system prompt\n\n"
                 "To chat with me, mention me in a message or send me a direct message."
             )
             await ctx.send(help_text)
@@ -298,6 +301,43 @@ class DeepBot(commands.Bot):
                 await ctx.send("🧹 Memory wiped! I'm starting fresh, but I'll keep my personality intact!")
             else:
                 await ctx.send("No conversation history to wipe.")
+        
+        @self.command(name="prompt")
+        async def prompt_command(ctx, action: str = None, *, line: str = None):
+            """Manage the system prompt."""
+            from system_prompt import get_system_prompt, add_line, remove_line, load_system_prompt
+            
+            if not action:
+                # Display current prompt
+                current_prompt = get_system_prompt()
+                await ctx.send(f"**Current System Prompt:**\n```\n{current_prompt}\n```")
+                return
+            
+            if action.lower() == "add" and line:
+                # Add a new line
+                lines = add_line(line)
+                await ctx.send(f"Added line to system prompt: `{line}`\n\nUpdated prompt now has {len(lines)} lines.")
+                # Update all channels with new system prompt
+                for channel_id in self.conversation_history:
+                    if self.conversation_history[channel_id]:
+                        self.conversation_history[channel_id][0]["content"] = get_system_prompt()
+            
+            elif action.lower() == "remove" and line:
+                # Remove a line
+                original_lines = load_system_prompt()
+                if line not in original_lines:
+                    await ctx.send(f"Line not found in system prompt: `{line}`")
+                    return
+                
+                lines = remove_line(line)
+                await ctx.send(f"Removed line from system prompt: `{line}`\n\nUpdated prompt now has {len(lines)} lines.")
+                # Update all channels with new system prompt
+                for channel_id in self.conversation_history:
+                    if self.conversation_history[channel_id]:
+                        self.conversation_history[channel_id][0]["content"] = get_system_prompt()
+            
+            else:
+                await ctx.send("Invalid command. Use `prompt` to view, `prompt add <line>` to add, or `prompt remove <line>` to remove.")
     
     async def on_ready(self):
         """Event triggered when the bot is ready."""

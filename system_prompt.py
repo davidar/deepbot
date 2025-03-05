@@ -1,0 +1,55 @@
+import os
+from typing import List
+
+# File to store the system prompt
+SYSTEM_PROMPT_FILE = "system_prompt.txt"
+
+def format_system_prompt(prompt: str, **kwargs) -> str:
+    """Format the system prompt with the given kwargs."""
+    try:
+        return prompt.format(**kwargs)
+    except KeyError as e:
+        print(f"Warning: Missing format key {e} in system prompt")
+        return prompt
+    except Exception as e:
+        print(f"Warning: Error formatting system prompt: {e}")
+        return prompt
+
+def load_system_prompt() -> List[str]:
+    """Load the system prompt from file, or create with initial prompt if it doesn't exist."""
+    try:
+        with open(SYSTEM_PROMPT_FILE, 'r') as f:
+            data = f.read()
+            return data.split('\n')
+    except Exception as e:
+        print(f"Error loading system prompt: {e}")
+        return []
+
+def save_system_prompt(lines: List[str]) -> None:
+    """Save the system prompt lines to file."""
+    try:
+        with open(SYSTEM_PROMPT_FILE, 'w') as f:
+            f.write('\n'.join(lines))
+    except Exception as e:
+        print(f"Error saving system prompt: {e}")
+
+def add_line(line: str) -> List[str]:
+    """Add a line to the system prompt and return the updated lines."""
+    lines = load_system_prompt()
+    if line not in lines:  # Avoid duplicates
+        lines.append(line)
+        save_system_prompt(lines)
+    return lines
+
+def remove_line(line: str) -> List[str]:
+    """Remove a line from the system prompt and return the updated lines."""
+    lines = load_system_prompt()
+    if line in lines:
+        lines.remove(line)
+        save_system_prompt(lines)
+    return lines
+
+def get_system_prompt(**kwargs) -> str:
+    """Get the complete system prompt as a string, formatted with the given kwargs."""
+    prompt = '\n'.join(load_system_prompt())
+    return format_system_prompt(prompt, **kwargs)
