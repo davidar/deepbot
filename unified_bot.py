@@ -1,11 +1,27 @@
 import io
-import discord
-from discord.ext import commands
 import json
 import logging
 import re
 import os
-from typing import Dict, List
+from typing import (
+    Dict,
+    List,
+    Optional,
+    Any,
+    Union,
+    Generator,
+    TypeVar,
+    Protocol,
+)
+
+import discord
+from discord.ext import commands
+from discord.ext.commands import Context, Bot
+from discord.message import Message
+from discord.channel import TextChannel, DMChannel
+from discord.user import ClientUser
+from discord.abc import GuildChannel, PrivateChannel, Messageable
+from discord.threads import Thread
 
 from api_client import OpenAICompatibleClient
 import config
@@ -19,6 +35,20 @@ logging.basicConfig(
     handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()],
 )
 logger = logging.getLogger("deepbot")
+
+# Type variable for the bot
+BotT = TypeVar("BotT", bound=Bot)
+
+
+# Event protocol for SSE client
+class Event(Protocol):
+    @property
+    def data(self) -> str: ...
+
+
+# SSE client protocol
+class SSEClient(Protocol):
+    def events(self) -> Generator[Event, None, None]: ...
 
 
 class DeepBot(commands.Bot):
@@ -50,11 +80,41 @@ class DeepBot(commands.Bot):
         # Add custom command error handler
         self.add_error_handler()
 
+    def get_bot_user(self) -> ClientUser:
+        if not self.user:
+            raise RuntimeError("Bot user not initialized")
+        return self.user
+
+    def get_channel_name(self, channel: Messageable) -> str:
+        """Safely get channel name, handling both text channels and DMs."""
+        if isinstance(channel, TextChannel):
+            return channel.name
+        return "DM"
+
+    def get_server_name(
+        self,
+        channel: Optional[Union[GuildChannel, Thread, PrivateChannel, Messageable]],
+    ) -> str:
+        """Get server name from channel, with fallback to DM chat."""
+        if channel and isinstance(channel, TextChannel):
+            return channel.guild.name
+        return "DM chat"
+
+    def is_mentioned_in(self, message: Message) -> bool:
+        """Safely check if the bot is mentioned in a message."""
+        try:
+            return bool(self.get_bot_user().mentioned_in(message))
+        except AttributeError:
+            return (
+                f"<@{self.get_bot_user().id}>" in message.content
+                or f"<@!{self.get_bot_user().id}>" in message.content
+            )
+
     def add_error_handler(self):
         """Add custom error handler for commands."""
 
         @self.event
-        async def on_command_error(ctx, error):
+        async def on_command_error(ctx: Context[BotT], error: Exception) -> None:
             """Handle command errors."""
             if isinstance(error, commands.CommandNotFound):
                 # This is handled in on_message, so we can ignore it here
@@ -67,11 +127,14 @@ class DeepBot(commands.Bot):
                 logger.error(f"Command error: {error}")
                 await ctx.send(f"Error executing command: {error}")
 
-    def _get_initial_messages(self, channel):
+    def _get_initial_messages(
+        self, channel: Union[GuildChannel, Thread, PrivateChannel, Messageable]
+    ) -> List[Dict[str, str]]:
         """
-        Get the initial messages for a new conversation, including:
-        - System message customized for the channel
-        - Example conversation from config
+        Get the initial messages for a new conversation.
+
+        Args:
+            channel: The Discord channel
 
         Returns:
             List of message dictionaries
@@ -79,11 +142,7 @@ class DeepBot(commands.Bot):
         # Start with the system message
         system_message = {
             "role": "system",
-            "content": get_system_prompt(
-                channel.guild.name
-                if isinstance(channel, discord.TextChannel)
-                else "our DM chat"
-            ),
+            "content": get_system_prompt(self.get_server_name(channel)),
         }
 
         # Create a list with system message and example conversation
@@ -96,7 +155,7 @@ class DeepBot(commands.Bot):
         """Add bot commands."""
 
         @self.command(name="reset")
-        async def reset_history(ctx):
+        async def reset_history(ctx: Context[BotT]) -> None:
             """Reset the conversation history for the current channel."""
             channel_id = ctx.channel.id
             if channel_id in self.conversation_history:
@@ -106,7 +165,7 @@ class DeepBot(commands.Bot):
                 await ctx.send("No conversation history to reset.")
 
         @self.command(name="refresh")
-        async def refresh_history(ctx):
+        async def refresh_history(ctx: Context[BotT]) -> None:
             """Refresh the conversation history by fetching recent messages from the channel."""
             if not isinstance(ctx.channel, discord.TextChannel):
                 await ctx.send(
@@ -133,7 +192,7 @@ class DeepBot(commands.Bot):
                 await ctx.send(f"Error refreshing history: {str(e)}")
 
         @self.command(name="raw")
-        async def raw_history(ctx):
+        async def raw_history(ctx: Context[BotT]) -> None:
             """Display the raw conversation history for debugging."""
             channel_id = ctx.channel.id
             if (
@@ -147,15 +206,17 @@ class DeepBot(commands.Bot):
             json_data = json.dumps(history, indent=2)
 
             # Create a discord.File object with the JSON data
+            # Convert string to bytes for discord.File
+            buffer = io.BytesIO(json_data.encode("utf-8"))
             file = discord.File(
-                io.StringIO(json_data),
+                buffer,
                 filename=f"conversation_history_{channel_id}.json",
             )
 
             await ctx.send("Here's the raw conversation history:", file=file)
 
         @self.command(name="info")
-        async def info_command(ctx):
+        async def info_command(ctx: Context[BotT]) -> None:
             """Display information about the bot configuration."""
             backend_type = (
                 "Echo Backend (Test Mode)"
@@ -180,7 +241,7 @@ class DeepBot(commands.Bot):
             await ctx.send(info_text)
 
         @self.command(name="history")
-        async def history_command(ctx):
+        async def history_command(ctx: Context[BotT]) -> None:
             """Display the current conversation history for the channel."""
             channel_id = ctx.channel.id
             if (
@@ -223,7 +284,7 @@ class DeepBot(commands.Bot):
             await ctx.send(history_text)
 
         @self.command(name="wipe")
-        async def wipe_memory(ctx):
+        async def wipe_memory(ctx: Context[BotT]) -> None:
             """Temporarily wipe the bot's memory while keeping the system message."""
             channel_id = ctx.channel.id
             if channel_id in self.conversation_history:
@@ -238,20 +299,17 @@ class DeepBot(commands.Bot):
                 await ctx.send("No conversation history to wipe.")
 
         @self.command(name="prompt")
-        async def prompt_command(ctx, action: str = None, *, line: str = None):
+        async def prompt_command(
+            ctx: Context[BotT],
+            action: Optional[str] = None,
+            *,
+            line: Optional[str] = None,
+        ) -> None:
             """Manage the system prompt."""
-
-            # Get server name once for all branches
-            def get_server_name(channel):
-                return (
-                    channel.guild.name
-                    if isinstance(channel, discord.TextChannel)
-                    else "DM chat"
-                )
 
             if not action:
                 # Display current prompt
-                current_prompt = get_system_prompt(get_server_name(ctx.channel))
+                current_prompt = get_system_prompt(self.get_server_name(ctx.channel))
                 await ctx.send(
                     f"**Current System Prompt:**\n```\n{current_prompt}\n```\nUse `prompt add <line>` to add a line or `prompt remove <line>` to remove a line."
                 )
@@ -267,9 +325,10 @@ class DeepBot(commands.Bot):
                 for channel_id in self.conversation_history:
                     if self.conversation_history[channel_id]:
                         channel = self.get_channel(channel_id)
-                        self.conversation_history[channel_id][0]["content"] = (
-                            get_system_prompt(get_server_name(channel))
-                        )
+                        if channel:  # Check if channel exists
+                            self.conversation_history[channel_id][0]["content"] = (
+                                get_system_prompt(self.get_server_name(channel))
+                            )
 
             elif action.lower() == "remove" and line:
                 # Remove a line
@@ -286,17 +345,22 @@ class DeepBot(commands.Bot):
                 for channel_id in self.conversation_history:
                     if self.conversation_history[channel_id]:
                         channel = self.get_channel(channel_id)
-                        self.conversation_history[channel_id][0]["content"] = (
-                            get_system_prompt(get_server_name(channel))
-                        )
+                        if channel:  # Check if channel exists
+                            self.conversation_history[channel_id][0]["content"] = (
+                                get_system_prompt(self.get_server_name(channel))
+                            )
 
             else:
                 await ctx.send(
                     "Invalid command. Use `prompt` to view, `prompt add <line>` to add, or `prompt remove <line>` to remove."
                 )
 
-    async def on_ready(self):
+    async def on_ready(self) -> None:
         """Event triggered when the bot is ready."""
+        if self.user is None:
+            logger.error("Bot user is None!")
+            return
+
         logger.info(f"Logged in as {self.user.name} ({self.user.id})")
         logger.info(f"Using API URL: {config.API_URL}")
 
@@ -306,264 +370,15 @@ class DeepBot(commands.Bot):
         logger.info(
             f"Starting to initialize history for all channels (fetch limit: {config.HISTORY_FETCH_LIMIT})"
         )
-        channel_count = 0
-        message_count = 0
 
         for guild in self.guilds:
             logger.info(f"Connected to {guild.name}")
 
         logger.info(f"Bot is ready!")
 
-    def _format_streaming_text(self, text):
-        """
-        Format streaming text for display in Discord.
-
-        Content inside <think></think> tags is displayed with -# prefix,
-        but the tags themselves are not shown.
-        Regular content is displayed normally.
-        """
-        # Split the text into sections based on think tags
-        sections = re.split(r"(<think>|</think>)", text)
-        formatted_lines = []
-
-        # Track if we're inside a think block
-        in_think_block = False
-
-        # Process each section
-        for section in sections:
-            if section == "<think>":
-                # Start of think block - don't add this to output
-                in_think_block = True
-            elif section == "</think>":
-                # End of think block - don't add this to output
-                in_think_block = False
-            elif section:  # Skip empty sections
-                # Process the lines in this section
-                for line in section.split("\n"):
-                    if line.strip():  # Skip empty lines
-                        if in_think_block:
-                            # Inside think block, use small font
-                            formatted_lines.append("-# " + line)
-                        else:
-                            # Regular content, use normal font
-                            formatted_lines.append(line)
-
-        # Join the formatted lines back into a single string
-        return "\n".join(formatted_lines)
-
-    def _truncate_formatted_text(self, formatted_text, max_length=1950):
-        """
-        Intelligently truncate formatted text to fit within Discord's character limit.
-
-        Prioritizes preserving regular content over thinking sections (small font lines).
-
-        Args:
-            formatted_text: The text with -# prefixes for thinking sections
-            max_length: Maximum allowed length (default: 1950 to leave some buffer)
-
-        Returns:
-            Truncated text that fits within the character limit
-        """
-        # If text is already within limit, return it as is
-        if len(formatted_text) <= max_length:
-            return formatted_text
-
-        # Split into lines
-        lines = formatted_text.split("\n")
-
-        # Separate thinking lines from regular lines
-        thinking_lines = [line for line in lines if line.startswith("-# ")]
-        regular_lines = [line for line in lines if not line.startswith("-# ")]
-
-        # Calculate total length of regular content
-        regular_content_length = sum(
-            len(line) + 1 for line in regular_lines
-        )  # +1 for newline
-
-        # If regular content alone exceeds limit, we need to truncate it
-        if regular_content_length > max_length:
-            # Keep as much regular content as possible
-            result = []
-            current_length = 0
-
-            for line in regular_lines:
-                line_length = len(line) + 1  # +1 for newline
-                if current_length + line_length <= max_length - 3:  # -3 for "..."
-                    result.append(line)
-                    current_length += line_length
-                else:
-                    # Truncate the last line if needed
-                    remaining = max_length - current_length - 3
-                    if remaining > 0:
-                        result.append(line[:remaining] + "...")
-                    else:
-                        result[-1] = result[-1][: len(result[-1]) - 3] + "..."
-                    break
-
-            return "\n".join(result)
-
-        # If we get here, we can keep all regular content and need to trim thinking sections
-
-        # Calculate how much space we have for thinking sections
-        available_space = max_length - regular_content_length
-
-        # If we have very little space, just return regular content
-        if available_space < 50:  # Arbitrary threshold
-            return "\n".join(regular_lines)
-
-        # We need to select which thinking lines to keep
-        # Strategy: Keep the first few and last few thinking lines
-
-        # Calculate how many thinking lines we can keep
-        thinking_lines_total_length = sum(len(line) + 1 for line in thinking_lines)
-
-        if thinking_lines_total_length <= available_space:
-            # We can keep all thinking lines
-            # Reconstruct the original order
-            result = []
-            thinking_index = 0
-
-            for line in lines:
-                if line.startswith("-# "):
-                    result.append(thinking_lines[thinking_index])
-                    thinking_index += 1
-                else:
-                    result.append(line)
-
-            return "\n".join(result)
-
-        # We need to truncate thinking sections
-        # Keep first and last thinking blocks intact if possible
-
-        # Group thinking lines into blocks (consecutive thinking lines)
-        thinking_blocks = []
-        current_block = []
-
-        for i, line in enumerate(lines):
-            if line.startswith("-# "):
-                current_block.append(line)
-            elif current_block:
-                thinking_blocks.append(current_block)
-                current_block = []
-
-        # Add the last block if it exists
-        if current_block:
-            thinking_blocks.append(current_block)
-
-        # If we have multiple thinking blocks, try to keep first and last
-        if len(thinking_blocks) > 1:
-            first_block = thinking_blocks[0]
-            last_block = thinking_blocks[-1]
-
-            first_block_length = sum(len(line) + 1 for line in first_block)
-            last_block_length = sum(len(line) + 1 for line in last_block)
-
-            # If we can keep both first and last blocks
-            if first_block_length + last_block_length <= available_space:
-                # Keep first and last blocks, discard middle blocks
-                kept_thinking_lines = first_block + last_block
-
-                # Reconstruct with regular lines and kept thinking lines
-                result = []
-                kept_thinking_index = 0
-
-                for line in lines:
-                    if line.startswith("-# "):
-                        if kept_thinking_index < len(kept_thinking_lines):
-                            result.append(kept_thinking_lines[kept_thinking_index])
-                            kept_thinking_index += 1
-                        # Skip thinking lines we're not keeping
-                    else:
-                        result.append(line)
-
-                return "\n".join(result)
-
-            # If we can't keep both blocks intact, prioritize the first block
-            if first_block_length <= available_space:
-                # Keep only the first thinking block
-                result = []
-                in_first_block = True
-
-                for i, line in enumerate(lines):
-                    if line.startswith("-# "):
-                        if in_first_block and len(result) < len(first_block):
-                            result.append(line)
-                        # Skip other thinking lines
-                    else:
-                        result.append(line)
-                        # Once we hit a regular line after the first thinking block,
-                        # we're no longer in the first block
-                        if in_first_block and any(
-                            line == block_line for block_line in first_block
-                        ):
-                            in_first_block = False
-
-                return "\n".join(result)
-
-        # If we get here, we need a simpler approach: just keep as many thinking lines as will fit
-        # Prioritize keeping the first few thinking lines
-
-        result = []
-        thinking_length = 0
-
-        for line in lines:
-            if line.startswith("-# "):
-                line_length = len(line) + 1  # +1 for newline
-                if thinking_length + line_length <= available_space:
-                    result.append(line)
-                    thinking_length += line_length
-                # Skip thinking lines that won't fit
-            else:
-                result.append(line)
-
-        return "\n".join(result)
-
-    def _convert_small_font_to_think_tags(self, content):
-        """
-        Convert small font lines (-# prefix) to <think></think> tags for the LLM.
-
-        Lines with -# prefix are wrapped in <think></think> tags,
-        while regular lines are preserved as is.
-        """
-        # Check if there are any lines with the small font prefix
-        if not any(line.startswith("-# ") for line in content.split("\n")):
-            return content
-
-        # Split the content into lines
-        lines = content.split("\n")
-        processed_lines = []
-
-        # Track consecutive small font lines
-        small_font_lines = []
-
-        # Process each line
-        for line in lines:
-            if line.startswith("-# "):
-                # This is a small font line - add to the current group
-                small_font_lines.append(line[3:])  # Remove the -# prefix
-            else:
-                # This is a regular line
-
-                # If we have accumulated small font lines, wrap them in think tags
-                if small_font_lines:
-                    processed_lines.append("<think>")
-                    processed_lines.extend(small_font_lines)
-                    processed_lines.append("</think>")
-                    small_font_lines = []
-
-                # Add the regular line
-                processed_lines.append(line)
-
-        # If we have any remaining small font lines at the end, wrap them too
-        if small_font_lines:
-            processed_lines.append("<think>")
-            processed_lines.extend(small_font_lines)
-            processed_lines.append("</think>")
-
-        # Join the processed lines back into a single string
-        return "\n".join(processed_lines)
-
-    async def _initialize_channel_history(self, channel):
+    async def _initialize_channel_history(
+        self, channel: Union[TextChannel, DMChannel]
+    ) -> None:
         """Initialize conversation history for a channel by fetching recent messages."""
         channel_id = channel.id
 
@@ -580,10 +395,10 @@ class DeepBot(commands.Bot):
         try:
             # Fetch recent messages from the channel
             message_limit = config.HISTORY_FETCH_LIMIT
-            all_messages = []
+            all_messages: List[Dict[str, Any]] = []
 
             logger.info(
-                f"Fetching up to {message_limit} messages from channel {channel.name}"
+                f"Fetching up to {message_limit} messages from channel {self.get_channel_name(channel)}"
             )
 
             # Use the Discord API to fetch recent messages
@@ -597,53 +412,53 @@ class DeepBot(commands.Bot):
                 content = self._clean_message_content(message)
 
                 # Add to our list with metadata for sorting and grouping
-                all_messages.append(
-                    {
-                        "role": "assistant" if message.author == self.user else "user",
-                        "content": content,
-                        "timestamp": message.created_at.timestamp(),
-                        "author_id": message.author.id,
-                        "is_directed": (
-                            self.user.mentioned_in(message)
-                            if message.author != self.user
-                            else None
-                        ),
-                    }
-                )
+                message_data = {
+                    "role": (
+                        "assistant" if message.author == self.get_bot_user() else "user"
+                    ),
+                    "content": content,
+                    "timestamp": float(message.created_at.timestamp()),
+                    "author_id": str(message.author.id),
+                    "is_directed": bool(
+                        self.is_mentioned_in(message)
+                        if message.author != self.get_bot_user()
+                        else False
+                    ),
+                }
+                all_messages.append(message_data)
 
             # Sort messages by timestamp
             all_messages.sort(key=lambda m: m["timestamp"])
 
             # Group adjacent messages from the same author
-            grouped_messages = []
-            current_group = None
+            grouped_messages: List[Dict[str, Any]] = []
+            current_group: Optional[Dict[str, Any]] = None
 
-            for message in all_messages:
+            for message_data in all_messages:
                 if current_group is None:
                     # Start a new group
                     current_group = {
-                        "role": message["role"],
-                        "content": message["content"],
-                        "author_id": message["author_id"],
-                        "is_directed": message["is_directed"],
+                        "role": str(message_data["role"]),
+                        "content": str(message_data["content"]),
+                        "author_id": str(message_data["author_id"]),
+                        "is_directed": bool(message_data["is_directed"]),
                     }
-                elif (
-                    current_group["author_id"] == message["author_id"]
-                    and current_group["role"] == message["role"]
-                ):
+                elif current_group["author_id"] == str(
+                    message_data["author_id"]
+                ) and current_group["role"] == str(message_data["role"]):
                     # Add to current group
-                    current_group["content"] += "\n\n" + message["content"]
+                    current_group["content"] += "\n\n" + str(message_data["content"])
                     # Update is_directed if this message is directed at the bot
-                    if message["is_directed"]:
+                    if bool(message_data["is_directed"]):
                         current_group["is_directed"] = True
                 else:
                     # Different author, add the current group and start a new one
                     grouped_messages.append(current_group)
                     current_group = {
-                        "role": message["role"],
-                        "content": message["content"],
-                        "author_id": message["author_id"],
-                        "is_directed": message["is_directed"],
+                        "role": str(message_data["role"]),
+                        "content": str(message_data["content"]),
+                        "author_id": str(message_data["author_id"]),
+                        "is_directed": bool(message_data["is_directed"]),
                     }
 
             # Add the last group if it exists
@@ -651,41 +466,43 @@ class DeepBot(commands.Bot):
                 grouped_messages.append(current_group)
 
             # Add messages to history (without extra metadata)
-            for message in grouped_messages:
+            for message_data in grouped_messages:
                 # Create a clean copy without the extra fields we added
-                message_copy = {"role": message["role"], "content": message["content"]}
+                message_copy = {
+                    "role": str(message_data["role"]),
+                    "content": str(message_data["content"]),
+                }
                 self.conversation_history[channel_id].append(message_copy)
 
             # Trim if needed
-            if (
-                len(self.conversation_history[channel_id]) > config.MAX_HISTORY + 1
-            ):  # +1 for system message
+            # +1 for system message
+            if len(self.conversation_history[channel_id]) > config.MAX_HISTORY + 1:
                 self.conversation_history[channel_id] = [
                     self.conversation_history[channel_id][0]  # Keep system message
                 ] + self.conversation_history[channel_id][-(config.MAX_HISTORY) :]
 
             logger.info(
-                f"Initialized history for channel {channel.name} with {len(grouped_messages)} message groups"
+                f"Initialized history for channel {self.get_channel_name(channel)} with {len(grouped_messages)} message groups"
             )
 
         except Exception as e:
             logger.error(
-                f"Error initializing history for channel {channel.name}: {str(e)}"
+                f"Error initializing history for channel {self.get_channel_name(channel)}: {str(e)}"
             )
             # Keep the initial messages at least
             self.conversation_history[channel_id] = self._get_initial_messages(channel)
 
-    async def on_message(self, message):
+    async def on_message(self, message: Message) -> None:
         """Event triggered when a message is received."""
         # Ignore messages from the bot itself
-        if message.author == self.user:
+        if message.author == self.get_bot_user():
             return
 
         # Get or initialize conversation history for this channel
         channel_id = message.channel.id
         if channel_id not in self.conversation_history:
             # For new channels, initialize history by fetching recent messages
-            if isinstance(message.channel, discord.TextChannel):
+            if isinstance(message.channel, TextChannel):
                 await self._initialize_channel_history(message.channel)
             else:
                 # For DMs or other channel types, just add initial messages
@@ -694,8 +511,8 @@ class DeepBot(commands.Bot):
                 )
 
         # Check if this message is directed at the bot
-        is_dm = isinstance(message.channel, discord.DMChannel)
-        is_mentioned = self.user.mentioned_in(message)
+        is_dm = isinstance(message.channel, DMChannel)
+        is_mentioned = self.is_mentioned_in(message)
         is_directed_at_bot = is_dm or is_mentioned
 
         # Only process commands if the bot is mentioned
@@ -717,7 +534,6 @@ class DeepBot(commands.Bot):
 
         # Add all messages to history, not just those directed at the bot
         # Format the username and message content
-        username = message.author.display_name
         content = message.content.strip()
 
         # Skip empty messages
@@ -749,7 +565,13 @@ class DeepBot(commands.Bot):
             return
 
         # Remove the bot mention from the message content for processing
-        clean_content = re.sub(f"<@!?{self.user.id}>", "", content).strip()
+        try:
+            clean_content = re.sub(
+                f"<@!?{self.get_bot_user().id}>", "", content
+            ).strip()
+        except RuntimeError:
+            logger.error("Bot user not initialized, cannot process message")
+            return
 
         # If the message is empty after removing the mention, don't process it
         if not clean_content:
@@ -761,12 +583,12 @@ class DeepBot(commands.Bot):
             logger.error(f"Error generating response: {str(e)}")
             await message.reply(f"Sorry, I encountered an error: {str(e)}")
 
-    def _clean_message_content(self, message):
+    def _clean_message_content(self, message: Message) -> str:
         """
         Clean up message content by replacing Discord mentions with usernames.
 
         Args:
-            message: The Discord message object
+            message: The Discord message
 
         Returns:
             Cleaned message content
@@ -774,15 +596,15 @@ class DeepBot(commands.Bot):
         content = message.content.strip()
 
         # Replace user mentions with usernames
-        for user_id in message.mentions:
-            mention_pattern = f"<@!?{user_id.id}>"
-            username = user_id.display_name
+        for user in message.mentions:
+            mention_pattern = f"<@!?{user.id}>"
+            username = user.display_name
             content = re.sub(mention_pattern, f"@{username}", content)
 
         # Replace channel mentions
-        for channel_id in message.channel_mentions:
-            channel_pattern = f"<#{channel_id.id}>"
-            channel_name = channel_id.name
+        for channel in message.channel_mentions:
+            channel_pattern = f"<#{channel.id}>"
+            channel_name = channel.name
             content = re.sub(channel_pattern, f"#{channel_name}", content)
 
         # Replace role mentions
@@ -794,7 +616,9 @@ class DeepBot(commands.Bot):
 
         return content
 
-    async def _handle_streaming_response(self, message, channel_id, clean_content):
+    async def _handle_streaming_response(
+        self, message: Message, channel_id: int, clean_content: str
+    ) -> None:
         """Handle a streaming response."""
         # Start typing indicator
         async with message.channel.typing():
@@ -823,7 +647,19 @@ class DeepBot(commands.Bot):
                     f"API Request payload: {json.dumps(request_payload, indent=2)}"
                 )
 
-                sse_client = self.api_client.chat_completion(**request_payload)
+                response = self.api_client.chat_completion(**request_payload)
+
+                # Handle both string responses and SSE client responses
+                if isinstance(response, str):
+                    # Handle non-streaming response
+                    await message.channel.send(response)
+                    self.conversation_history[channel_id].append(
+                        {"role": "assistant", "content": response}
+                    )
+                    return
+
+                if not hasattr(response, "events"):
+                    raise RuntimeError("SSE client does not support events streaming")
 
                 # Variables to track streaming state
                 accumulated_text = ""  # Current chunk being built
@@ -832,7 +668,7 @@ class DeepBot(commands.Bot):
                 is_final = False
 
                 # Process streaming response
-                for event in sse_client.events():
+                for event in response.events():
                     try:
                         chunk_count += 1
 
@@ -870,10 +706,7 @@ class DeepBot(commands.Bot):
                                         "\n", 1
                                     )
 
-                                    # Format the text (for think tags)
-                                    formatted_text = self._format_streaming_text(
-                                        to_send
-                                    )
+                                    formatted_text = to_send
 
                                     # Only send if we have non-empty content
                                     if formatted_text.strip():
@@ -902,7 +735,7 @@ class DeepBot(commands.Bot):
 
                 # Send any remaining accumulated text
                 if accumulated_text and accumulated_text.strip():
-                    formatted_text = self._format_streaming_text(accumulated_text)
+                    formatted_text = accumulated_text
                     if formatted_text.strip():
                         try:
                             await message.channel.send(formatted_text)
@@ -924,7 +757,10 @@ class DeepBot(commands.Bot):
 def run_bot():
     """Run the bot."""
     bot = DeepBot()
-    bot.run(config.DISCORD_TOKEN)
+    token = config.DISCORD_TOKEN
+    if token is None:
+        raise ValueError("DISCORD_TOKEN is not set in config")
+    bot.run(token)
 
 
 if __name__ == "__main__":

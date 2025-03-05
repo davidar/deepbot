@@ -3,59 +3,47 @@ import json
 import time
 from typing import List, Dict, Optional, Union, Any, Generator
 
+
 class SSEEvent:
     """Simulated Server-Sent Event for streaming responses."""
-    
+
     def __init__(self, data: str):
         self.data = data
 
+
 class SSEClient:
     """Simulated SSE client for streaming responses."""
-    
+
     def __init__(self, response_text: str):
         self.response_text = response_text
-        self.chunks = self._create_chunks()
-    
+        self.chunks: List[Dict[str, Any]] = self._create_chunks()
+
     def _create_chunks(self) -> List[Dict[str, Any]]:
         """Split the response into chunks for streaming."""
-        chunks = []
+        chunks: List[Dict[str, Any]] = []
         # Split the response into words
         words = self.response_text.split()
-        
+
         # Create chunks of 1-3 words
         current_chunk = []
         for word in words:
             current_chunk.append(word)
-            
+
             # Randomly decide to send the chunk (simulate streaming)
-            if len(current_chunk) >= 3 or (len(current_chunk) > 0 and len(chunks) % 2 == 0):
+            if len(current_chunk) >= 3 or (
+                len(current_chunk) > 0 and len(chunks) % 2 == 0
+            ):
                 chunk_text = " ".join(current_chunk)
-                chunks.append({
-                    "choices": [
-                        {
-                            "delta": {
-                                "content": chunk_text + " "
-                            }
-                        }
-                    ]
-                })
+                chunks.append({"choices": [{"delta": {"content": chunk_text + " "}}]})
                 current_chunk = []
-        
+
         # Add any remaining words
         if current_chunk:
             chunk_text = " ".join(current_chunk)
-            chunks.append({
-                "choices": [
-                    {
-                        "delta": {
-                            "content": chunk_text
-                        }
-                    }
-                ]
-            })
-        
+            chunks.append({"choices": [{"delta": {"content": chunk_text}}]})
+
         return chunks
-    
+
     def events(self) -> Generator[SSEEvent, None, None]:
         """Generate SSE events from the chunks."""
         for chunk in self.chunks:
@@ -63,16 +51,17 @@ class SSEClient:
             time.sleep(0.2)
             yield SSEEvent(json.dumps(chunk))
 
+
 class EchoClient:
     """Echo client that mimics the OpenAI API but just echoes back messages."""
-    
+
     def __init__(self, base_url: str, api_key: str = "not-needed"):
         """Initialize the echo client."""
         self.base_url = base_url
         self.api_key = api_key
         self.logger = logging.getLogger("echo_client")
         self.logger.info("Echo client initialized (for testing)")
-    
+
     def chat_completion(
         self,
         messages: List[Dict[str, str]],
@@ -84,11 +73,11 @@ class EchoClient:
         frequency_penalty: float = 0.0,
         stop: Optional[Union[str, List[str]]] = None,
         stream: bool = False,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
     ) -> Union[str, SSEClient]:
         """
         Echo the last user message with some additional context.
-        
+
         Args:
             messages: List of message dictionaries with 'role' and 'content'
             model: Model identifier to use
@@ -100,16 +89,16 @@ class EchoClient:
             stop: Stop sequences
             stream: Whether to stream the response
             seed: Random seed for reproducibility
-            
+
         Returns:
             Either a string response or an SSEClient for streaming
         """
         self.logger.info(f"Echo client received {len(messages)} messages")
-        
+
         # Get the last user message directed to the bot
         last_user_message = None
         last_user_name = "User"
-        
+
         # First, try to find a message that was explicitly directed to the bot
         for message in reversed(messages):
             if message["role"] == "user" and "[directed at bot]" in message["content"]:
@@ -121,7 +110,7 @@ class EchoClient:
                 else:
                     last_user_message = content
                 break
-        
+
         # If we didn't find a direct message, just use the last user message
         if last_user_message is None and len(messages) > 0:
             for message in reversed(messages):
@@ -134,25 +123,29 @@ class EchoClient:
                     else:
                         last_user_message = content
                     break
-        
+
         if not last_user_message:
             response = "I didn't receive any message to echo back."
         else:
             # Create a simple echo response
             response = f"ECHO: {last_user_message}\n\n(This is the echo backend for testing. No LLM is being used.)"
-            
+
             # Count messages by type
             system_messages = sum(1 for m in messages if m["role"] == "system")
             user_messages = sum(1 for m in messages if m["role"] == "user")
             assistant_messages = sum(1 for m in messages if m["role"] == "assistant")
-            directed_messages = sum(1 for m in messages if m["role"] == "user" and "[directed at bot]" in m["content"])
-            
+            directed_messages = sum(
+                1
+                for m in messages
+                if m["role"] == "user" and "[directed at bot]" in m["content"]
+            )
+
             # Add history info
             response += f"\n\nI have {len(messages)} messages in my history for this conversation:"
             response += f"\n- {system_messages} system messages"
             response += f"\n- {user_messages} user messages ({directed_messages} directed at me)"
             response += f"\n- {assistant_messages} assistant messages"
-            
+
             # Add recent speakers
             recent_speakers = set()
             for message in messages:
@@ -160,16 +153,16 @@ class EchoClient:
                     content = message["content"].replace(" [directed at bot]", "")
                     speaker = content.split(":", 1)[0].strip()
                     recent_speakers.add(speaker)
-            
+
             if recent_speakers:
                 response += f"\n\nRecent speakers: {', '.join(recent_speakers)}"
-        
+
         if stream:
             return SSEClient(response)
         else:
             return response
-    
-    def list_models(self) -> List[Dict[str, Any]]:
+
+    def list_models(self) -> Dict[str, List[Dict[str, Any]]]:
         """List fake models."""
         return {
             "data": [
@@ -177,19 +170,19 @@ class EchoClient:
                     "id": "echo-model-small",
                     "object": "model",
                     "owned_by": "echo",
-                    "permission": []
+                    "permission": [],
                 },
                 {
                     "id": "echo-model-medium",
                     "object": "model",
                     "owned_by": "echo",
-                    "permission": []
+                    "permission": [],
                 },
                 {
                     "id": "echo-model-large",
                     "object": "model",
                     "owned_by": "echo",
-                    "permission": []
-                }
+                    "permission": [],
+                },
             ]
-        } 
+        }
