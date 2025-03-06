@@ -1,10 +1,10 @@
 # DeepBot - Discord Bot with Local LLM Integration
 
-A Discord bot that uses the Oobabooga Text Generation WebUI API to generate streaming responses based on conversation history.
+A Discord bot that uses a local LLM API to generate streaming responses based on conversation history.
 
 ## Features
 
-- Integrates with local Oobabooga Text Generation WebUI API
+- Integrates with local LLM API (compatible with OpenAI API format)
 - Maintains conversation history for context-aware responses
 - Responds to messages in Discord channels
 - Customizable bot behavior through environment variables
@@ -15,6 +15,8 @@ A Discord bot that uses the Oobabooga Text Generation WebUI API to generate stre
 - View conversation history with a simple command
 - Tracks all channel messages for better context awareness
 - Preserves context across restarts by fetching channel history
+- Supports both text channels and direct messages
+- Includes thread support for better conversation organization
 
 ## Message History
 
@@ -46,8 +48,6 @@ This feature ensures continuity in conversations even after bot restarts, withou
 
 You can also manually refresh the conversation history at any time using the `@BotName refresh` command. This will clear the current history and fetch recent messages from the channel again.
 
-If you're experiencing issues with the history initialization, you can use the `@BotName debug` command to see detailed information about the messages in the channel and the current state of the conversation history.
-
 ## Setup
 
 1. Run the setup script to create a virtual environment and install dependencies:
@@ -55,49 +55,32 @@ If you're experiencing issues with the history initialization, you can use the `
    python setup.py
    ```
 
-2. Activate the virtual environment:
-   - Windows:
-     ```
-     activate.bat
-     ```
-   - Unix/Linux/Mac:
-     ```
-     source activate.sh
-     ```
-
-3. Create a `.env` file with the following variables:
+2. Create a `.env` file with the following variables:
    ```
    DISCORD_TOKEN=your_discord_bot_token
-   API_URL=http://127.0.0.1:5000
-   API_KEY=your_api_key_if_needed
-   BOT_PREFIX=!
    ```
 
-4. Run the bot:
+3. Run the bot:
    ```
-   python run.py
-   ```
-   
-   For testing without an LLM connection:
-   ```
-   python run.py --echo
+   python main.py
    ```
 
 ## Usage
 
 - The bot will respond to messages in channels it has access to when mentioned
 - The bot will also respond to direct messages
-- Use `@BotName commands` to see available commands
 - Use `@BotName reset` to clear the conversation history
 - Use `@BotName refresh` to refresh the conversation history from channel messages
 - Use `@BotName info` to see the current bot configuration
 - Use `@BotName history` to view the current conversation history
-- Use `@BotName debug` to see detailed information about the channel messages and history
+- Use `@BotName raw` to see the raw conversation history
+- Use `@BotName wipe` to clear all conversation history
+- Use `@BotName prompt` to view or modify the system prompt
 - The bot tracks all messages in the channel, not just those directed at it, for better context
 
 ## Echo Backend
 
-The echo backend allows you to test the Discord bot functionality without connecting to the Oobabooga API. This is useful for:
+The echo backend allows you to test the Discord bot functionality without connecting to the LLM API. This is useful for:
 
 - Testing the bot's Discord integration
 - Developing new features without running the LLM
@@ -105,30 +88,32 @@ The echo backend allows you to test the Discord bot functionality without connec
 
 To use the echo backend:
 ```
-python run.py --echo
+python main.py --echo
 ```
 
 ## Streaming Mode
 
-The bot shows responses as they're being generated, similar to how ChatGPT shows responses in real-time. This provides a more interactive experience for users.
+The bot shows responses as they're being generated, similar to how ChatGPT shows responses in real-time. This provides a more interactive experience for users. The streaming implementation:
+
+- Accumulates complete lines before sending them
+- Handles partial lines gracefully
+- Provides smooth, natural-looking responses
+- Maintains proper formatting and line breaks
 
 ## Configuration
 
-You can customize the bot's behavior by modifying the following environment variables in the `.env` file:
+The bot's behavior can be customized by modifying the following variables in `config.py`:
 
-- `DISCORD_TOKEN`: Your Discord bot token
-- `API_URL`: URL of the Oobabooga API (default: http://127.0.0.1:5000)
-- `API_KEY`: API key for authentication (if enabled)
-- `BOT_PREFIX`: Command prefix for the bot (default: !)
+- `API_URL`: URL of the LLM API (default: http://127.0.0.1:1234/v1)
+- `MODEL_NAME`: Name of the model to use (default: mistral-small-24b-instruct-2501)
 - `MAX_HISTORY`: Maximum number of messages to keep in history (default: 10)
 - `HISTORY_FETCH_LIMIT`: Maximum number of messages to fetch from channel history on startup (default: 50)
-- `CHARACTER`: Character to use for responses (default: none)
-- `MODE`: API mode to use (default: chat)
 - `TEMPERATURE`: Sampling temperature (default: 0.7)
-- `MAX_TOKENS`: Maximum tokens to generate (default: 200)
+- `MAX_TOKENS`: Maximum tokens to generate (default: -1 for unlimited)
 - `TOP_P`: Top-p sampling parameter (default: 0.9)
-
-Note: The bot tracks all messages in the channel, not just those directed at it. This provides better context for responses, but you may want to adjust `MAX_HISTORY` based on how busy your channels are.
+- `PRESENCE_PENALTY`: Presence penalty for generation (default: 0.0)
+- `FREQUENCY_PENALTY`: Frequency penalty for generation (default: 0.0)
+- `SEED`: Random seed for generation (default: -1 for random)
 
 ## Creating a Discord Bot
 
@@ -146,7 +131,7 @@ Note: The bot tracks all messages in the channel, not just those directed at it.
 
 ## Command Line Arguments
 
-The `run.py` script accepts the following command line arguments:
+The `main.py` script accepts the following command line arguments:
 
 - `--echo`: Use the echo backend instead of connecting to the LLM API
 - `--setup`: Run the setup script before starting the bot
@@ -158,30 +143,21 @@ The `run.py` script accepts the following command line arguments:
 
 1. **"The command help is already an existing command or alias"**
    - This error occurs because discord.py already has a built-in help command
-   - Solution: Use `@BotName commands` instead of `@BotName help` to see available commands
+   - Solution: Use `@BotName info` to see available commands
 
-2. **"PyNaCl is not installed, voice will NOT be supported"**
-   - This warning appears if PyNaCl is not installed, which is needed for voice support
-   - Solution: Run `pip install PyNaCl` in your virtual environment
-   - Note: Voice support is not required for the bot to function properly
-
-3. **"Error: DISCORD_TOKEN not set in .env file"**
+2. **"Error: DISCORD_TOKEN not set in .env file"**
    - This error occurs when the Discord token is missing or invalid
    - Solution: Make sure you've added your Discord bot token to the `.env` file
 
-4. **"Error generating response: API request failed"**
-   - This error occurs when the bot can't connect to the Oobabooga API
-   - Solution: Make sure Oobabooga is running with the API enabled (`python server.py --api`)
-   - Alternative: Use the echo backend for testing (`python run.py --echo`)
+3. **"Error generating response: API request failed"**
+   - This error occurs when the bot can't connect to the LLM API
+   - Solution: Make sure your LLM API is running and accessible at the configured URL
+   - Alternative: Use the echo backend for testing (`python main.py --echo`)
 
-5. **"Not running in a virtual environment"**
+4. **"Not running in a virtual environment"**
    - This warning appears if you run the bot outside the virtual environment
    - Solution: Activate the virtual environment before running the bot
    - Alternative: Use `--skip-venv-check` to bypass this check
-
-6. **"Commands not working with ! prefix"**
-   - This is expected behavior as the bot now uses mention-based commands
-   - Solution: Mention the bot with your command, like `@BotName reset` instead of `!reset`
 
 ### Getting Help
 
