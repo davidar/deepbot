@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import os
+from enum import Enum
 from typing import (
     Dict,
     List,
@@ -12,6 +13,8 @@ from typing import (
     Generator,
     TypeVar,
     Protocol,
+    AsyncGenerator,
+    Tuple,
 )
 
 import discord
@@ -49,6 +52,16 @@ class Event(Protocol):
 # SSE client protocol
 class SSEClient(Protocol):
     def events(self) -> Generator[Event, None, None]: ...
+
+
+class LineStatus(Enum):
+    """Status of a line being streamed."""
+
+    ACCUMULATING = "accumulating"  # Line is still being built
+    COMPLETE = "complete"  # Line is complete and ready to send
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class DeepBot(commands.Bot):
@@ -578,7 +591,7 @@ class DeepBot(commands.Bot):
             return
 
         try:
-            await self._handle_streaming_response(message, channel_id, clean_content)
+            await self._handle_streaming_response(message, channel_id)
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
             await message.reply(f"Sorry, I encountered an error: {str(e)}")
@@ -616,142 +629,152 @@ class DeepBot(commands.Bot):
 
         return content
 
+    async def _stream_response_lines(
+        self, channel_id: int
+    ) -> AsyncGenerator[Tuple[LineStatus, str], None]:
+        """Generator that yields line status and content as they stream in from the API.
+
+        Args:
+            channel_id: The Discord channel ID
+
+        Yields:
+            Tuples of (LineStatus, content) where:
+            - LineStatus.ACCUMULATING indicates the start of a new line
+            - LineStatus.COMPLETE indicates a complete line ready to send
+        """
+        try:
+            logger.info(f"Starting streaming response for channel {channel_id}")
+            logger.info(
+                f"History length: {len(self.conversation_history[channel_id])} messages"
+            )
+            logger.info(f"Max tokens setting: {config.MAX_TOKENS}")
+
+            # Log the full request payload
+            request_payload = {
+                "messages": self.conversation_history[channel_id],
+                "model": config.MODEL_NAME,
+                "temperature": config.TEMPERATURE,
+                "max_tokens": (config.MAX_TOKENS if config.MAX_TOKENS != -1 else None),
+                "top_p": config.TOP_P,
+                "presence_penalty": config.PRESENCE_PENALTY,
+                "frequency_penalty": config.FREQUENCY_PENALTY,
+                "seed": config.SEED if config.SEED != -1 else None,
+                "stream": True,
+            }
+            logger.info(f"API Request payload: {json.dumps(request_payload, indent=2)}")
+
+            response = self.api_client.chat_completion(**request_payload)
+
+            # Handle both string responses and SSE client responses
+            if isinstance(response, str):
+                # Handle non-streaming response
+                yield (LineStatus.COMPLETE, response)
+                return
+
+            if not hasattr(response, "events"):
+                raise RuntimeError("SSE client does not support events streaming")
+
+            # Variables to track streaming state
+            full_response = ""  # Complete response for history
+            chunk_count = 0
+            current_line = ""  # Current line being built
+            # Track if current line has non-whitespace content
+            has_non_whitespace = False
+
+            # Process streaming response
+            for event in response.events():
+                try:
+                    chunk_count += 1
+
+                    # Handle [DONE] message specially
+                    if event.data == "[DONE]":
+                        continue
+
+                    data = json.loads(event.data)
+                    logger.debug(f"Received chunk {chunk_count}: {data}")
+
+                    if "choices" in data and len(data["choices"]) > 0:
+                        if (
+                            "delta" in data["choices"][0]
+                            and "content" in data["choices"][0]["delta"]
+                        ):
+                            content = data["choices"][0]["delta"]["content"]
+                            current_line += content
+                            full_response += content
+
+                            # Check if we've received non-whitespace content
+                            if not has_non_whitespace and content.strip():
+                                has_non_whitespace = True
+                                # Signal start of new line with content
+                                yield (LineStatus.ACCUMULATING, "")
+
+                            # Log every 100 chunks
+                            if chunk_count % 100 == 0:
+                                logger.info(
+                                    f"Processed {chunk_count} chunks, current length: {len(full_response)}"
+                                )
+
+                            # Check for newlines in current line
+                            while "\n" in current_line:
+                                # Split at first newline
+                                to_send, current_line = current_line.split("\n", 1)
+                                has_non_whitespace = False  # Reset for next line
+
+                                # Only yield if we have non-empty content
+                                if to_send.strip():
+                                    yield (LineStatus.COMPLETE, to_send)
+
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to decode chunk: {e}: {repr(event.data)}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error processing chunk: {str(e)}")
+                    continue
+
+            logger.info(f"Stream completed. Total chunks: {chunk_count}")
+            logger.info(f"Final response length: {len(full_response)} characters")
+
+            # Handle any remaining text
+            if current_line.strip():
+                yield (LineStatus.COMPLETE, current_line)
+
+            # Store the complete response in conversation history
+            self.conversation_history[channel_id].append(
+                {"role": "assistant", "content": full_response}
+            )
+
+        except Exception as e:
+            error_message = f"Error in streaming response: {str(e)}"
+            logger.error(error_message)
+            logger.error(f"Full error details: {repr(e)}")
+            yield (LineStatus.COMPLETE, error_message)
+
     async def _handle_streaming_response(
-        self, message: Message, channel_id: int, clean_content: str
+        self, message: Message, channel_id: int
     ) -> None:
-        """Handle a streaming response."""
-        # Start typing indicator
+        """Handle a streaming response by combining streaming and sending logic.
+
+        Args:
+            message: The Discord message to respond to
+            channel_id: The Discord channel ID
+        """
         async with message.channel.typing():
             try:
-                logger.info(f"Starting streaming response for channel {channel_id}")
-                logger.info(
-                    f"History length: {len(self.conversation_history[channel_id])} messages"
-                )
-                logger.info(f"Max tokens setting: {config.MAX_TOKENS}")
-
-                # Log the full request payload
-                request_payload = {
-                    "messages": self.conversation_history[channel_id],
-                    "model": config.MODEL_NAME,
-                    "temperature": config.TEMPERATURE,
-                    "max_tokens": (
-                        config.MAX_TOKENS if config.MAX_TOKENS != -1 else None
-                    ),
-                    "top_p": config.TOP_P,
-                    "presence_penalty": config.PRESENCE_PENALTY,
-                    "frequency_penalty": config.FREQUENCY_PENALTY,
-                    "seed": config.SEED if config.SEED != -1 else None,
-                    "stream": True,
-                }
-                logger.info(
-                    f"API Request payload: {json.dumps(request_payload, indent=2)}"
-                )
-
-                response = self.api_client.chat_completion(**request_payload)
-
-                # Handle both string responses and SSE client responses
-                if isinstance(response, str):
-                    # Handle non-streaming response
-                    await message.channel.send(response)
-                    self.conversation_history[channel_id].append(
-                        {"role": "assistant", "content": response}
-                    )
-                    return
-
-                if not hasattr(response, "events"):
-                    raise RuntimeError("SSE client does not support events streaming")
-
-                # Variables to track streaming state
-                accumulated_text = ""  # Current chunk being built
-                full_response = ""  # Complete response for history
-                chunk_count = 0
-                is_final = False
-
-                # Process streaming response
-                for event in response.events():
-                    try:
-                        chunk_count += 1
-
-                        # Handle [DONE] message specially
-                        if event.data == "[DONE]":
-                            is_final = True
-                            continue
-
-                        data = json.loads(event.data)
-                        logger.debug(f"Received chunk {chunk_count}: {data}")
-
-                        if "choices" in data and len(data["choices"]) > 0:
-                            # Check if this is the final chunk
-                            if data["choices"][0].get("finish_reason") is not None:
-                                is_final = True
-
-                            if (
-                                "delta" in data["choices"][0]
-                                and "content" in data["choices"][0]["delta"]
-                            ):
-                                content = data["choices"][0]["delta"]["content"]
-                                accumulated_text += content
-                                full_response += content
-
-                                # Log every 100 chunks
-                                if chunk_count % 100 == 0:
-                                    logger.info(
-                                        f"Processed {chunk_count} chunks, current length: {len(full_response)}"
-                                    )
-
-                                # Check for newlines in accumulated text
-                                while "\n" in accumulated_text:
-                                    # Split at first newline
-                                    to_send, accumulated_text = accumulated_text.split(
-                                        "\n", 1
-                                    )
-
-                                    formatted_text = to_send
-
-                                    # Only send if we have non-empty content
-                                    if formatted_text.strip():
-                                        try:
-                                            await message.channel.send(formatted_text)
-                                            # Start new typing indicator if not the final chunk
-                                            if not is_final:
-                                                async with message.channel.typing():
-                                                    pass  # Just to restart the typing indicator
-                                        except discord.errors.HTTPException as e:
-                                            logger.warning(
-                                                f"Failed to send message chunk: {str(e)}"
-                                            )
-
-                    except json.JSONDecodeError as e:
-                        logger.warning(
-                            f"Failed to decode chunk: {e}: {repr(event.data)}"
-                        )
-                        continue
-                    except Exception as e:
-                        logger.error(f"Error processing chunk: {str(e)}")
-                        continue
-
-                logger.info(f"Stream completed. Total chunks: {chunk_count}")
-                logger.info(f"Final response length: {len(full_response)} characters")
-
-                # Send any remaining accumulated text
-                if accumulated_text and accumulated_text.strip():
-                    formatted_text = accumulated_text
-                    if formatted_text.strip():
+                async for status, line in self._stream_response_lines(channel_id):
+                    if status == LineStatus.ACCUMULATING:
+                        logger.info(f"Accumulating line")
+                        # Start typing indicator
+                        async with message.channel.typing():
+                            pass
+                    elif status == LineStatus.COMPLETE and line.strip():
+                        logger.info(f"Sending line: {line}")
                         try:
-                            await message.channel.send(formatted_text)
+                            await message.channel.send(line)
                         except discord.errors.HTTPException as e:
-                            logger.error(f"Failed to send final chunk: {str(e)}")
-
-                # Add the complete response to conversation history WITH the think tags
-                self.conversation_history[channel_id].append(
-                    {"role": "assistant", "content": full_response}
-                )
-
+                            logger.warning(f"Failed to send message chunk: {str(e)}")
             except Exception as e:
-                error_message = f"Error in streaming response: {str(e)}"
-                logger.error(error_message)
-                logger.error(f"Full error details: {repr(e)}")
-                await message.channel.send(error_message)
+                logger.error(f"Error sending messages: {str(e)}")
+                await message.channel.send(f"Error sending messages: {str(e)}")
 
 
 def run_bot():
