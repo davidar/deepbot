@@ -327,11 +327,10 @@ class DeepBot(commands.Bot):
             """Manage the system prompt."""
 
             if not action:
-                # Display current prompt
-                current_prompt = get_system_prompt(self.get_server_name(ctx.channel))
-                await ctx.send(
-                    f"**Current System Prompt:**\n```\n{current_prompt}\n```\nUse `prompt add <line>` to add a line or `prompt remove <line>` to remove a line."
-                )
+                # Display current prompt as a file attachment
+                file = discord.File('system_prompt.txt')
+                await ctx.send("**Current System Prompt:**", file=file)
+                await ctx.send("Use `prompt add <line>` to add a line or `prompt remove <line>` to remove a line.")
                 return
 
             if action.lower() == "add" and line:
