@@ -283,8 +283,8 @@ class DeepBot(commands.Bot):
                 if role == "System":
                     formatted_content = f"*{content}*"
                 elif role == "User":
-                    # Format user messages - simpler now without "Message from" prefix
-                    formatted_content = f"**User**: {content}"
+                    # Format user messages - content already includes username
+                    formatted_content = content
                 else:
                     formatted_content = content
 
@@ -434,7 +434,7 @@ class DeepBot(commands.Bot):
                     "role": (
                         "assistant" if message.author == self.get_bot_user() else "user"
                     ),
-                    "content": content,
+                    "content": f"{message.author.display_name}: {content}" if message.author != self.get_bot_user() else content,
                     "timestamp": float(message.created_at.timestamp()),
                     "author_id": str(message.author.id),
                     "is_directed": bool(
@@ -599,7 +599,7 @@ class DeepBot(commands.Bot):
 
         # Add user message to history - simplified format without "Message from" prefix
         self.conversation_history[channel_id].append(
-            {"role": "user", "content": content}
+            {"role": "user", "content": f"{message.author.display_name}: {content}"}
         )
 
         # Trim history if it exceeds the maximum length
