@@ -835,6 +835,7 @@ class DeepBot(commands.Bot):
                     pass
 
                 first_message = True
+                line_count = 0
                 async for status, line in self._stream_response_lines(channel_id):
                     if status == LineStatus.ACCUMULATING:
                         logger.info(f"Accumulating line")
@@ -850,6 +851,17 @@ class DeepBot(commands.Bot):
                                 first_message = False
                             else:
                                 await message.channel.send(line)
+                            line_count += 1
+
+                            if line_count > 9:
+                                logger.info(
+                                    "Reached maximum line limit, stopping response"
+                                )
+                                await message.channel.send(
+                                    "-# Response truncated due to length limit"
+                                )
+                                break
+
                         except discord.errors.HTTPException as e:
                             logger.warning(f"Failed to send message chunk: {str(e)}")
             except Exception as e:
