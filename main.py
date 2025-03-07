@@ -15,6 +15,7 @@ from typing import (
     Protocol,
     AsyncGenerator,
     Tuple,
+    Set,
 )
 import asyncio
 from collections import defaultdict
@@ -90,6 +91,9 @@ class DeepBot(commands.Bot):
         self.response_tasks: Dict[int, Optional[asyncio.Task]] = defaultdict(
             lambda: None
         )
+
+        # Track which tasks have been told to shut up
+        self.shutup_tasks: Set[asyncio.Task] = set()
 
         # Discord message length limit with safety margin
         # Discord limit is 2000, leaving 50 chars as safety margin
@@ -376,6 +380,28 @@ class DeepBot(commands.Bot):
                 await ctx.send(
                     "Invalid command. Use `prompt` to view, `prompt add <line>` to add, or `prompt remove <line>` to remove."
                 )
+
+        @self.command(name="shutup")
+        async def shutup_command(ctx: Context[BotT]) -> None:
+            """Stop all responses in the current channel."""
+            channel_id = ctx.channel.id
+            
+            # Cancel the response task if it exists
+            task = self.response_tasks[channel_id]
+            if task is not None and not task.done():
+                # Mark this task as shut up
+                self.shutup_tasks.add(task)
+                task.cancel()
+                self.response_tasks[channel_id] = None
+            
+            # Clear the response queue
+            while not self.response_queues[channel_id].empty():
+                try:
+                    self.response_queues[channel_id].get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            
+            await ctx.send("🤫 Stopped all responses in this channel.")
 
     async def on_ready(self) -> None:
         """Event triggered when the bot is ready."""
@@ -823,6 +849,12 @@ class DeepBot(commands.Bot):
             message: The Discord message to respond to
             channel_id: The Discord channel ID
         """
+        # Get the current task
+        current_task = asyncio.current_task()
+        if current_task is None:
+            logger.error("No current task found")
+            return
+
         async with message.channel.typing():
             try:
                 # Add typing reaction
@@ -837,6 +869,11 @@ class DeepBot(commands.Bot):
                 first_message = True
                 line_count = 0
                 async for status, line in self._stream_response_lines(channel_id):
+                    # Check if this specific task has been told to shut up
+                    if current_task in self.shutup_tasks:
+                        logger.info(f"Task was told to shut up, stopping response")
+                        break
+
                     if status == LineStatus.ACCUMULATING:
                         logger.info(f"Accumulating line")
                         # Start typing indicator
@@ -874,6 +911,8 @@ class DeepBot(commands.Bot):
                 except discord.errors.NotFound:
                     # Reaction might not exist, that's okay
                     pass
+                # Remove this task from the shutup set
+                self.shutup_tasks.discard(current_task)
 
 
 def run_bot():
