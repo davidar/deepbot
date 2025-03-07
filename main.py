@@ -87,7 +87,9 @@ class DeepBot(commands.Bot):
 
         # Store response queues for each channel
         self.response_queues: Dict[int, asyncio.Queue] = defaultdict(asyncio.Queue)
-        self.response_tasks: Dict[int, Optional[asyncio.Task]] = defaultdict(lambda: None)
+        self.response_tasks: Dict[int, Optional[asyncio.Task]] = defaultdict(
+            lambda: None
+        )
 
         # Discord message length limit with safety margin
         # Discord limit is 2000, leaving 50 chars as safety margin
@@ -328,9 +330,11 @@ class DeepBot(commands.Bot):
 
             if not action:
                 # Display current prompt as a file attachment
-                file = discord.File('system_prompt.txt')
+                file = discord.File("system_prompt.txt")
                 await ctx.send("**Current System Prompt:**", file=file)
-                await ctx.send("Use `prompt add <line>` to add a line or `prompt remove <line>` to remove a line.")
+                await ctx.send(
+                    "Use `prompt add <line>` to add a line or `prompt remove <line>` to remove a line."
+                )
                 return
 
             if action.lower() == "add" and line:
@@ -434,7 +438,11 @@ class DeepBot(commands.Bot):
                     "role": (
                         "assistant" if message.author == self.get_bot_user() else "user"
                     ),
-                    "content": f"{message.author.display_name}: {content}" if message.author != self.get_bot_user() else content,
+                    "content": (
+                        f"{message.author.display_name}: {content}"
+                        if message.author != self.get_bot_user()
+                        else content
+                    ),
                     "timestamp": float(message.created_at.timestamp()),
                     "author_id": str(message.author.id),
                     "is_directed": bool(
@@ -516,7 +524,7 @@ class DeepBot(commands.Bot):
             try:
                 # Get the next message to respond to
                 message = await self.response_queues[channel_id].get()
-                
+
                 # Process the response
                 try:
                     await self._handle_streaming_response(message, channel_id)
@@ -526,7 +534,7 @@ class DeepBot(commands.Bot):
                 finally:
                     # Mark the task as done
                     self.response_queues[channel_id].task_done()
-                    
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -597,10 +605,20 @@ class DeepBot(commands.Bot):
         # Clean up the content by replacing Discord mentions with usernames
         content = self._clean_message_content(message)
 
-        # Add user message to history - simplified format without "Message from" prefix
-        self.conversation_history[channel_id].append(
-            {"role": "user", "content": f"{message.author.display_name}: {content}"}
+        # Check if this message is already the last message in history
+        message_content = f"{message.author.display_name}: {content}"
+        history = self.conversation_history[channel_id]
+        is_duplicate = (
+            history
+            and history[-1]["role"] == "user"
+            and history[-1]["content"] == message_content
         )
+
+        # Add user message to history if it's not a duplicate
+        if not is_duplicate:
+            self.conversation_history[channel_id].append(
+                {"role": "user", "content": message_content}
+            )
 
         # Trim history if it exceeds the maximum length
         if len(self.conversation_history[channel_id]) > config.MAX_HISTORY:
@@ -815,7 +833,7 @@ class DeepBot(commands.Bot):
                 except discord.errors.NotFound:
                     # Reaction might not exist, that's okay
                     pass
-                
+
                 first_message = True
                 async for status, line in self._stream_response_lines(channel_id):
                     if status == LineStatus.ACCUMULATING:
