@@ -76,6 +76,7 @@ class DeepBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True  # Required to read message content
         intents.messages = True
+        intents.reactions = True  # Required to track reactions
 
         # Use mention as the command prefix
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
@@ -95,6 +96,12 @@ class DeepBot(commands.Bot):
         # Track which tasks have been told to shut up
         self.shutup_tasks: Set[asyncio.Task] = set()
 
+        # Store reaction data for bot messages
+        # Format: {message_id: {"info": {...}, "reactions": [{"emoji": str, "count": int}]}}
+        self.reaction_data: Dict[int, Dict[str, Any]] = defaultdict(
+            lambda: {"reactions": []}
+        )
+
         # Discord message length limit with safety margin
         # Discord limit is 2000, leaving 50 chars as safety margin
         self.DISCORD_MESSAGE_LIMIT = 1950
@@ -105,6 +112,9 @@ class DeepBot(commands.Bot):
         # Add custom command error handler
         self.add_error_handler()
 
+        # Load reaction data from file if it exists
+        self._load_reaction_data()
+
     def get_bot_user(self) -> ClientUser:
         if not self.user:
             raise RuntimeError("Bot user not initialized")
@@ -114,7 +124,10 @@ class DeepBot(commands.Bot):
         """Safely get channel name, handling both text channels and DMs."""
         if isinstance(channel, TextChannel):
             return channel.name
-        return "DM"
+        elif isinstance(channel, DMChannel):
+            return "DM"
+        else:
+            return "Unknown Channel"
 
     def get_server_name(
         self,
@@ -152,6 +165,64 @@ class DeepBot(commands.Bot):
                 logger.error(f"Command error: {error}")
                 await ctx.send(f"Error executing command: {error}")
 
+    def _get_reaction_stats(self, channel_id: int) -> List[Tuple[int, int]]:
+        """Get reaction statistics for a channel.
+
+        Args:
+            channel_id: The Discord channel ID
+
+        Returns:
+            List of tuples (message_id, total_reactions) sorted by reaction count
+        """
+        # Get all messages from this channel
+        channel_messages = {
+            msg_id: data
+            for msg_id, data in self.reaction_data.items()
+            if data["info"]["channel_id"] == channel_id
+        }
+
+        # Get most reacted messages
+        message_reactions = []
+        for msg_id, data in channel_messages.items():
+            total_reactions = sum(r["count"] for r in data["reactions"])
+            if total_reactions > 0:
+                message_reactions.append((msg_id, total_reactions))
+
+        # Sort by reaction count
+        message_reactions.sort(key=lambda x: x[1], reverse=True)
+        return message_reactions
+
+    def _format_reaction_summary(
+        self, message_reactions: List[Tuple[int, int]], limit: int = 5
+    ) -> str:
+        """Format reaction statistics into a summary string.
+
+        Args:
+            message_reactions: List of (message_id, count) tuples
+            limit: Maximum number of messages to include
+
+        Returns:
+            Formatted summary string
+        """
+        if not message_reactions:
+            return "No reactions yet in this channel."
+
+        summary = ""
+        for msg_id, count in message_reactions[:limit]:
+            msg_data = self.reaction_data[msg_id]
+            content = msg_data["info"]["content"]
+            if len(content) > 100:
+                content = content[:97] + "..."
+
+            # Format reactions
+            reactions = []
+            for r in msg_data["reactions"]:
+                reactions.append(f"{r['emoji']} x {r['count']}")
+            reactions_str = ", ".join(reactions)
+
+            summary += f"{count} total reactions ({reactions_str}): {content}\n"
+        return summary
+
     def _get_initial_messages(
         self, channel: Union[GuildChannel, Thread, PrivateChannel, Messageable]
     ) -> List[Dict[str, str]]:
@@ -169,6 +240,17 @@ class DeepBot(commands.Bot):
             "role": "system",
             "content": get_system_prompt(self.get_server_name(channel)),
         }
+
+        # Add reaction summary if available
+        channel_id = channel.id
+        message_reactions = self._get_reaction_stats(channel_id)
+
+        if message_reactions:
+            reaction_summary = "\n\n**Most Reacted Messages in this Channel:**\n"
+            reaction_summary += self._format_reaction_summary(
+                message_reactions, limit=3
+            )
+            system_message["content"] += reaction_summary
 
         # Create a list with system message and example conversation
         initial_messages = [system_message]
@@ -385,7 +467,7 @@ class DeepBot(commands.Bot):
         async def shutup_command(ctx: Context[BotT]) -> None:
             """Stop all responses in the current channel."""
             channel_id = ctx.channel.id
-            
+
             # Cancel the response task if it exists
             task = self.response_tasks[channel_id]
             if task is not None and not task.done():
@@ -393,15 +475,31 @@ class DeepBot(commands.Bot):
                 self.shutup_tasks.add(task)
                 task.cancel()
                 self.response_tasks[channel_id] = None
-            
+
             # Clear the response queue
             while not self.response_queues[channel_id].empty():
                 try:
                     self.response_queues[channel_id].get_nowait()
                 except asyncio.QueueEmpty:
                     break
-            
+
             await ctx.send("🤫 Stopped all responses in this channel.")
+
+        @self.command(name="reactions")
+        async def reactions_command(ctx: Context[BotT]) -> None:
+            """Display reaction statistics for the bot's messages in the current channel."""
+            channel_id = ctx.channel.id
+            message_reactions = self._get_reaction_stats(channel_id)
+
+            if not message_reactions:
+                await ctx.send("No reaction data available for this channel yet.")
+                return
+
+            # Create a summary of reactions
+            channel_name = self.get_channel_name(ctx.channel)
+            summary = f"**Reaction Statistics for #{channel_name}**\n\n"
+            summary += self._format_reaction_summary(message_reactions)
+            await ctx.send(summary)
 
     async def on_ready(self) -> None:
         """Event triggered when the bot is ready."""
@@ -411,6 +509,9 @@ class DeepBot(commands.Bot):
 
         logger.info(f"Logged in as {self.user.name} ({self.user.id})")
         logger.info(f"Using API URL: {config.API_URL}")
+
+        # Log intents for debugging
+        logger.info(f"Bot intents: {self.intents}")
 
         await self.change_presence(activity=discord.Game(name=f"with myself"))
 
@@ -479,6 +580,26 @@ class DeepBot(commands.Bot):
                 }
                 all_messages.append(message_data)
 
+                # If this is a bot message, store its info and initialize reaction counts
+                if message.author == self.get_bot_user():
+                    self.reaction_data[message.id] = {
+                        "info": {
+                            "content": content,
+                            "channel_id": channel_id,
+                            "channel_name": self.get_channel_name(channel),
+                            "server_name": self.get_server_name(channel),
+                            "timestamp": float(message.created_at.timestamp()),
+                        },
+                        "reactions": [],
+                    }
+
+                    # Initialize reaction counts from message reactions
+                    for reaction in message.reactions:
+                        emoji = str(reaction.emoji)
+                        self.reaction_data[message.id]["reactions"].append(
+                            {"emoji": emoji, "count": reaction.count}
+                        )
+
             # Sort messages by timestamp
             all_messages.sort(key=lambda m: m["timestamp"])
 
@@ -532,6 +653,9 @@ class DeepBot(commands.Bot):
                 self.conversation_history[channel_id] = [
                     self.conversation_history[channel_id][0]  # Keep system message
                 ] + self.conversation_history[channel_id][-(config.MAX_HISTORY) :]
+
+            # Save reaction data after initializing history
+            self._save_reaction_data()
 
             logger.info(
                 f"Initialized history for channel {self.get_channel_name(channel)} with {len(grouped_messages)} message groups"
@@ -913,6 +1037,100 @@ class DeepBot(commands.Bot):
                     pass
                 # Remove this task from the shutup set
                 self.shutup_tasks.discard(current_task)
+
+    def _load_reaction_data(self) -> None:
+        """Load reaction data from file."""
+        try:
+            if os.path.exists("reaction_data.json"):
+                with open("reaction_data.json", "r") as f:
+                    data = json.load(f)
+                    # Convert to our internal format
+                    for message in data:
+                        msg_id = message["id"]
+                        self.reaction_data[msg_id] = {
+                            "info": message["info"],
+                            "reactions": message["reactions"],
+                        }
+                logger.info("Loaded reaction data from file")
+        except Exception as e:
+            logger.error(f"Error loading reaction data: {str(e)}")
+
+    def _save_reaction_data(self) -> None:
+        """Save reaction data to file."""
+        try:
+            # Convert to list format for saving
+            messages_data = []
+
+            # Only include messages that have reactions
+            for msg_id, data in self.reaction_data.items():
+                if not data["reactions"]:  # Skip messages with no reactions
+                    continue
+
+                message_data = {
+                    "id": msg_id,
+                    "info": data["info"],
+                    "reactions": data["reactions"],
+                }
+                messages_data.append(message_data)
+
+            # Sort messages by timestamp (newest first)
+            messages_data.sort(key=lambda x: x["info"]["timestamp"], reverse=True)
+
+            # Save with pretty formatting
+            with open("reaction_data.json", "w") as f:
+                json.dump(messages_data, f, indent=2)
+            logger.info("Saved reaction data to file")
+        except Exception as e:
+            logger.error(f"Error saving reaction data: {str(e)}")
+
+    async def on_reaction_add(
+        self, reaction: discord.Reaction, user: discord.User
+    ) -> None:
+        """Handle reaction add events."""
+        logger.info(
+            f"Reaction add event received: {reaction.emoji} on message {reaction.message.id} by {user.name}"
+        )
+
+        # Ignore reactions from the bot itself
+        if user == self.get_bot_user():
+            logger.debug("Ignoring bot's own reaction")
+            return
+
+        # Only track reactions on messages from the bot
+        if reaction.message.author != self.get_bot_user():
+            logger.debug("Ignoring reaction on non-bot message")
+            return
+
+        message_id = reaction.message.id
+        emoji = str(reaction.emoji)
+
+        # Update reaction count
+        if message_id not in self.reaction_data:
+            self.reaction_data[message_id] = {
+                "info": {
+                    "content": reaction.message.content,
+                    "channel_id": reaction.message.channel.id,
+                    "channel_name": self.get_channel_name(reaction.message.channel),
+                    "server_name": self.get_server_name(reaction.message.channel),
+                    "timestamp": reaction.message.created_at.timestamp(),
+                },
+                "reactions": [],
+            }
+
+        for r in self.reaction_data[message_id]["reactions"]:
+            if r["emoji"] == emoji:
+                r["count"] += 1
+                break
+        else:
+            # If emoji not found, add new reaction
+            self.reaction_data[message_id]["reactions"].append(
+                {"emoji": emoji, "count": 1}
+            )
+
+        # Save to file
+        self._save_reaction_data()
+
+        logger.info(f"Reaction {emoji} added to message {message_id} by {user.name}")
 
 
 def run_bot():
