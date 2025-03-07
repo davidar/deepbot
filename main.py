@@ -807,14 +807,14 @@ class DeepBot(commands.Bot):
         """
         async with message.channel.typing():
             try:
+                # Add typing reaction
+                await message.add_reaction("⌨️")
                 # Remove the thinking reaction
                 try:
                     await message.remove_reaction("💭", self.get_bot_user())
                 except discord.errors.NotFound:
                     # Reaction might not exist, that's okay
                     pass
-                # Add typing reaction
-                await message.add_reaction("⌨️")
                 
                 first_message = True
                 async for status, line in self._stream_response_lines(channel_id):
