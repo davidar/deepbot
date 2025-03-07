@@ -16,6 +16,8 @@ from typing import (
     AsyncGenerator,
     Tuple,
 )
+import asyncio
+from collections import defaultdict
 
 import discord
 from discord.ext import commands
@@ -82,6 +84,10 @@ class DeepBot(commands.Bot):
 
         # Store conversation history for each channel
         self.conversation_history: Dict[int, List[Dict[str, str]]] = {}
+
+        # Store response queues for each channel
+        self.response_queues: Dict[int, asyncio.Queue] = defaultdict(asyncio.Queue)
+        self.response_tasks: Dict[int, Optional[asyncio.Task]] = defaultdict(lambda: None)
 
         # Discord message length limit with safety margin
         # Discord limit is 2000, leaving 50 chars as safety margin
@@ -505,6 +511,42 @@ class DeepBot(commands.Bot):
             # Keep the initial messages at least
             self.conversation_history[channel_id] = self._get_initial_messages(channel)
 
+    async def _process_response_queue(self, channel_id: int) -> None:
+        """Process the response queue for a channel."""
+        while True:
+            try:
+                # Get the next message to respond to
+                message = await self.response_queues[channel_id].get()
+                
+                # Process the response
+                try:
+                    await self._handle_streaming_response(message, channel_id)
+                except Exception as e:
+                    logger.error(f"Error processing response: {str(e)}")
+                    await message.reply(f"Sorry, I encountered an error: {str(e)}")
+                finally:
+                    # Mark the task as done
+                    self.response_queues[channel_id].task_done()
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in response queue processor: {str(e)}")
+                # Don't break on error, just log and continue processing
+                continue
+
+    async def _ensure_queue_processor(self, channel_id: int) -> None:
+        """Ensure there's an active queue processor for the channel."""
+        task = self.response_tasks[channel_id]
+        if task is None or (isinstance(task, asyncio.Task) and task.done()):
+            # Cancel existing task if it exists
+            if task is not None and not task.done():
+                task.cancel()
+            # Create a new processor task
+            self.response_tasks[channel_id] = asyncio.create_task(
+                self._process_response_queue(channel_id)
+            )
+
     async def on_message(self, message: Message) -> None:
         """Event triggered when a message is received."""
         # Ignore messages from the bot itself
@@ -591,9 +633,15 @@ class DeepBot(commands.Bot):
             return
 
         try:
-            await self._handle_streaming_response(message, channel_id)
+            # Add message to response queue
+            await self.response_queues[channel_id].put(message)
+            # Ensure there's a queue processor running
+            await self._ensure_queue_processor(channel_id)
+            # Send acknowledgment
+            await message.add_reaction("💭")
+            logger.info(f"Added message to queue for channel {channel_id}")
         except Exception as e:
-            logger.error(f"Error generating response: {str(e)}")
+            logger.error(f"Error queueing response: {str(e)}")
             await message.reply(f"Sorry, I encountered an error: {str(e)}")
 
     def _clean_message_content(self, message: Message) -> str:
@@ -760,6 +808,16 @@ class DeepBot(commands.Bot):
         """
         async with message.channel.typing():
             try:
+                # Remove the thinking reaction
+                try:
+                    await message.remove_reaction("💭", self.get_bot_user())
+                except discord.errors.NotFound:
+                    # Reaction might not exist, that's okay
+                    pass
+                # Add typing reaction
+                await message.add_reaction("⌨️")
+                
+                first_message = True
                 async for status, line in self._stream_response_lines(channel_id):
                     if status == LineStatus.ACCUMULATING:
                         logger.info(f"Accumulating line")
@@ -769,12 +827,24 @@ class DeepBot(commands.Bot):
                     elif status == LineStatus.COMPLETE and line.strip():
                         logger.info(f"Sending line: {line}")
                         try:
-                            await message.channel.send(line)
+                            if first_message:
+                                # First message should be a reply
+                                await message.reply(line)
+                                first_message = False
+                            else:
+                                await message.channel.send(line)
                         except discord.errors.HTTPException as e:
                             logger.warning(f"Failed to send message chunk: {str(e)}")
             except Exception as e:
                 logger.error(f"Error sending messages: {str(e)}")
-                await message.channel.send(f"Error sending messages: {str(e)}")
+                await message.reply(f"Error sending messages: {str(e)}")
+            finally:
+                # Remove the typing reaction
+                try:
+                    await message.remove_reaction("⌨️", self.get_bot_user())
+                except discord.errors.NotFound:
+                    # Reaction might not exist, that's okay
+                    pass
 
 
 def run_bot():
