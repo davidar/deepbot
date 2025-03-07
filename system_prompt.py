@@ -1,3 +1,4 @@
+import datetime
 from typing import List
 
 # File to store the system prompt
@@ -45,4 +46,5 @@ def remove_line(line: str) -> List[str]:
 def get_system_prompt(server_name: str) -> str:
     """Get the complete system prompt as a string, formatted with the given kwargs."""
     prompt = "\n".join(load_system_prompt())
-    return f"# Discord Server: {server_name}\n\n{prompt}"
+    current_time = datetime.datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
+    return f"# Discord Server: {server_name}\n# Current Time: {current_time}\n\n{prompt}"
