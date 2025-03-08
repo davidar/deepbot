@@ -1,5 +1,6 @@
 import json
 import os
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -11,7 +12,11 @@ if not DISCORD_TOKEN:
     raise ValueError("DISCORD_TOKEN environment variable is not set")
 
 # API configuration
+# https://lmstudio.ai/docs/app/api/endpoints/openai
 API_URL = "http://127.0.0.1:1234/v1"
+
+# https://huggingface.co/lmstudio-community/Mistral-Small-24B-Instruct-2501-GGUF
+# Mistral-Small-24B-Instruct-2501-GGUF/Mistral-Small-24B-Instruct-2501-Q4_K_M.gguf
 MODEL_NAME = "mistral-small-24b-instruct-2501"
 
 # Bot configuration

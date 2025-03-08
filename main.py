@@ -1,37 +1,42 @@
+import asyncio
 import io
 import json
 import logging
-import re
 import os
+import re
+from collections import defaultdict
 from enum import Enum
 from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncGenerator,
     Dict,
+    Generator,
     List,
     Optional,
-    Any,
-    Union,
-    Generator,
-    TypeVar,
     Protocol,
-    AsyncGenerator,
-    Tuple,
     Set,
+    Tuple,
+    Union,
 )
-import asyncio
-from collections import defaultdict
 
 import discord
+from discord.abc import GuildChannel, Messageable, PrivateChannel
+from discord.channel import DMChannel, TextChannel
 from discord.ext import commands
-from discord.ext.commands import Context, Bot
 from discord.message import Message
-from discord.channel import TextChannel, DMChannel
-from discord.user import ClientUser
-from discord.abc import GuildChannel, PrivateChannel, Messageable
 from discord.threads import Thread
+from discord.user import ClientUser
 
-from api_client import OpenAICompatibleClient
+Bot = commands.Bot
+Context = commands.Context
+
+if TYPE_CHECKING:
+    from discord.abc import MessageableChannel
+
 import config
 import system_prompt
+from api_client import OpenAICompatibleClient
 from system_prompt import get_system_prompt
 
 # Set up logging
@@ -41,9 +46,6 @@ logging.basicConfig(
     handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()],
 )
 logger = logging.getLogger("deepbot")
-
-# Type variable for the bot
-BotT = TypeVar("BotT", bound=Bot)
 
 
 # Event protocol for SSE client
@@ -70,7 +72,7 @@ class LineStatus(Enum):
 class DeepBot(commands.Bot):
     """Discord bot that uses streaming responses from an LLM API."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the bot."""
         # Initialize with mention as command prefix
         intents = discord.Intents.default()
@@ -88,13 +90,15 @@ class DeepBot(commands.Bot):
         self.conversation_history: Dict[int, List[Dict[str, str]]] = {}
 
         # Store response queues for each channel
-        self.response_queues: Dict[int, asyncio.Queue] = defaultdict(asyncio.Queue)
-        self.response_tasks: Dict[int, Optional[asyncio.Task]] = defaultdict(
+        self.response_queues: Dict[int, asyncio.Queue[Message]] = defaultdict(
+            asyncio.Queue
+        )
+        self.response_tasks: Dict[int, Optional[asyncio.Task[None]]] = defaultdict(
             lambda: None
         )
 
         # Track which tasks have been told to shut up
-        self.shutup_tasks: Set[asyncio.Task] = set()
+        self.shutup_tasks: Set[asyncio.Task[None]] = set()
 
         # Store reaction data for bot messages
         # Format: {message_id: {"info": {...}, "reactions": [{"emoji": str, "count": int}]}}
@@ -148,11 +152,11 @@ class DeepBot(commands.Bot):
                 or f"<@!{self.get_bot_user().id}>" in message.content
             )
 
-    def add_error_handler(self):
+    def add_error_handler(self) -> None:
         """Add custom error handler for commands."""
 
         @self.event
-        async def on_command_error(ctx: Context[BotT], error: Exception) -> None:
+        async def on_command_error(ctx: Context[Bot], error: Exception) -> None:
             """Handle command errors."""
             if isinstance(error, commands.CommandNotFound):
                 # This is handled in on_message, so we can ignore it here
@@ -182,7 +186,7 @@ class DeepBot(commands.Bot):
         }
 
         # Get most reacted messages
-        message_reactions = []
+        message_reactions: List[Tuple[int, int]] = []
         for msg_id, data in channel_messages.items():
             total_reactions = sum(r["count"] for r in data["reactions"])
             if total_reactions > 0:
@@ -215,7 +219,7 @@ class DeepBot(commands.Bot):
                 content = content[:97] + "..."
 
             # Format reactions
-            reactions = []
+            reactions: List[str] = []
             for r in msg_data["reactions"]:
                 reactions.append(f"{r['emoji']} x {r['count']}")
             reactions_str = ", ".join(reactions)
@@ -224,7 +228,7 @@ class DeepBot(commands.Bot):
         return summary
 
     def _get_initial_messages(
-        self, channel: Union[GuildChannel, Thread, PrivateChannel, Messageable]
+        self, channel: "MessageableChannel"
     ) -> List[Dict[str, str]]:
         """
         Get the initial messages for a new conversation.
@@ -258,11 +262,11 @@ class DeepBot(commands.Bot):
 
         return initial_messages
 
-    def add_commands(self):
+    def add_commands(self) -> None:
         """Add bot commands."""
 
         @self.command(name="reset")
-        async def reset_history(ctx: Context[BotT]) -> None:
+        async def reset_history(ctx: Context[Bot]) -> None:
             """Reset the conversation history for the current channel."""
             channel_id = ctx.channel.id
             if channel_id in self.conversation_history:
@@ -272,7 +276,7 @@ class DeepBot(commands.Bot):
                 await ctx.send("No conversation history to reset.")
 
         @self.command(name="refresh")
-        async def refresh_history(ctx: Context[BotT]) -> None:
+        async def refresh_history(ctx: Context[Bot]) -> None:
             """Refresh the conversation history by fetching recent messages from the channel."""
             if not isinstance(ctx.channel, discord.TextChannel):
                 await ctx.send(
@@ -299,7 +303,7 @@ class DeepBot(commands.Bot):
                 await ctx.send(f"Error refreshing history: {str(e)}")
 
         @self.command(name="raw")
-        async def raw_history(ctx: Context[BotT]) -> None:
+        async def raw_history(ctx: Context[Bot]) -> None:
             """Display the raw conversation history for debugging."""
             channel_id = ctx.channel.id
             if (
@@ -323,7 +327,7 @@ class DeepBot(commands.Bot):
             await ctx.send("Here's the raw conversation history:", file=file)
 
         @self.command(name="info")
-        async def info_command(ctx: Context[BotT]) -> None:
+        async def info_command(ctx: Context[Bot]) -> None:
             """Display information about the bot configuration."""
             backend_type = (
                 "Echo Backend (Test Mode)"
@@ -348,7 +352,7 @@ class DeepBot(commands.Bot):
             await ctx.send(info_text)
 
         @self.command(name="history")
-        async def history_command(ctx: Context[BotT]) -> None:
+        async def history_command(ctx: Context[Bot]) -> None:
             """Display the current conversation history for the channel."""
             channel_id = ctx.channel.id
             if (
@@ -391,7 +395,7 @@ class DeepBot(commands.Bot):
             await ctx.send(history_text)
 
         @self.command(name="wipe")
-        async def wipe_memory(ctx: Context[BotT]) -> None:
+        async def wipe_memory(ctx: Context[Bot]) -> None:
             """Temporarily wipe the bot's memory while keeping the system message."""
             channel_id = ctx.channel.id
             if channel_id in self.conversation_history:
@@ -407,7 +411,7 @@ class DeepBot(commands.Bot):
 
         @self.command(name="prompt")
         async def prompt_command(
-            ctx: Context[BotT],
+            ctx: Context[Bot],
             action: Optional[str] = None,
             *,
             line: Optional[str] = None,
@@ -464,7 +468,7 @@ class DeepBot(commands.Bot):
                 )
 
         @self.command(name="shutup")
-        async def shutup_command(ctx: Context[BotT]) -> None:
+        async def shutup_command(ctx: Context[Bot]) -> None:
             """Stop all responses in the current channel."""
             channel_id = ctx.channel.id
 
@@ -486,7 +490,7 @@ class DeepBot(commands.Bot):
             await ctx.send("🤫 Stopped all responses in this channel.")
 
         @self.command(name="reactions")
-        async def reactions_command(ctx: Context[BotT]) -> None:
+        async def reactions_command(ctx: Context[Bot]) -> None:
             """Display reaction statistics for the bot's messages in the current channel."""
             channel_id = ctx.channel.id
             message_reactions = self._get_reaction_stats(channel_id)
@@ -695,7 +699,7 @@ class DeepBot(commands.Bot):
     async def _ensure_queue_processor(self, channel_id: int) -> None:
         """Ensure there's an active queue processor for the channel."""
         task = self.response_tasks[channel_id]
-        if task is None or (isinstance(task, asyncio.Task) and task.done()):
+        if task is None or task.done():
             # Cancel existing task if it exists
             if task is not None and not task.done():
                 task.cancel()
@@ -864,21 +868,17 @@ class DeepBot(commands.Bot):
             )
             logger.info(f"Max tokens setting: {config.MAX_TOKENS}")
 
-            # Log the full request payload
-            request_payload = {
-                "messages": self.conversation_history[channel_id],
-                "model": config.MODEL_NAME,
-                "temperature": config.TEMPERATURE,
-                "max_tokens": (config.MAX_TOKENS if config.MAX_TOKENS != -1 else None),
-                "top_p": config.TOP_P,
-                "presence_penalty": config.PRESENCE_PENALTY,
-                "frequency_penalty": config.FREQUENCY_PENALTY,
-                "seed": config.SEED if config.SEED != -1 else None,
-                "stream": True,
-            }
-            logger.info(f"API Request payload: {json.dumps(request_payload, indent=2)}")
-
-            response = self.api_client.chat_completion(**request_payload)
+            response = self.api_client.chat_completion(
+                messages=self.conversation_history[channel_id],
+                model=str(config.MODEL_NAME),
+                temperature=float(config.TEMPERATURE),
+                max_tokens=int(config.MAX_TOKENS) if config.MAX_TOKENS != -1 else None,
+                top_p=float(config.TOP_P),
+                presence_penalty=float(config.PRESENCE_PENALTY),
+                frequency_penalty=float(config.FREQUENCY_PENALTY),
+                seed=int(config.SEED) if config.SEED != -1 else None,
+                stream=True,
+            )
 
             # Handle both string responses and SSE client responses
             if isinstance(response, str):
@@ -1059,7 +1059,7 @@ class DeepBot(commands.Bot):
         """Save reaction data to file."""
         try:
             # Convert to list format for saving
-            messages_data = []
+            messages_data: List[Dict[str, Any]] = []
 
             # Only include messages that have reactions
             for msg_id, data in self.reaction_data.items():
@@ -1074,7 +1074,9 @@ class DeepBot(commands.Bot):
                 messages_data.append(message_data)
 
             # Sort messages by timestamp (newest first)
-            messages_data.sort(key=lambda x: x["info"]["timestamp"], reverse=True)
+            messages_data.sort(
+                key=lambda x: float(x["info"]["timestamp"]), reverse=True
+            )
 
             # Save with pretty formatting
             with open("reaction_data.json", "w") as f:
@@ -1133,7 +1135,7 @@ class DeepBot(commands.Bot):
         logger.info(f"Reaction {emoji} added to message {message_id} by {user.name}")
 
 
-def run_bot():
+def run_bot() -> None:
     """Run the bot."""
     bot = DeepBot()
     token = config.DISCORD_TOKEN

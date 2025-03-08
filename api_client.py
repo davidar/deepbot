@@ -1,11 +1,61 @@
 import json
-import requests  # type: ignore
 import logging
-import sseclient  # type: ignore
-from typing import List, Dict, Optional, Union, Any, TypeVar, cast
+from typing import (
+    Any,
+    Dict,
+    Generator,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    TypeVar,
+    Union,
+    cast,
+)
+
+import requests
+import sseclient
+from requests import Response
+
+
+# Protocol for SSE client
+class SSEClient(Protocol):
+    def events(self) -> Iterator[Any]: ...
+    def close(self) -> None: ...
+
 
 # Type variable for response data
 ResponseData = TypeVar("ResponseData", bound=Dict[str, Any])
+
+# Type for API payload
+PayloadDict = Dict[
+    str,
+    Union[
+        str,
+        List[Dict[str, str]],
+        float,
+        bool,
+        Optional[int],
+        Optional[Union[str, List[str]]],
+    ],
+]
+
+# Type for SSE response
+SSEResponse = Union[str, SSEClient]
+
+
+# Helper function to create SSE client
+def create_sse_client(response: Response) -> SSEClient:
+    """Create an SSE client from a response object."""
+
+    # Create a generator that yields bytes from the response
+    def generate_bytes() -> Generator[bytes, None, None]:
+        for chunk in response.iter_content(chunk_size=None):
+            if chunk:
+                yield chunk
+
+    # Create SSE client from the generator
+    return sseclient.SSEClient(generate_bytes())
 
 
 class OpenAICompatibleClient:
@@ -36,7 +86,7 @@ class OpenAICompatibleClient:
         stop: Optional[Union[str, List[str]]] = None,
         stream: bool = False,
         seed: Optional[int] = None,
-    ) -> Union[str, sseclient.SSEClient]:
+    ) -> SSEResponse:
         """
         Generate a chat completion using the API.
 
@@ -56,7 +106,7 @@ class OpenAICompatibleClient:
             Either a string response or an SSEClient for streaming
         """
         # Prepare the request payload
-        payload = {
+        payload: PayloadDict = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
@@ -81,10 +131,10 @@ class OpenAICompatibleClient:
         }
 
         # Log the request details
-        self.logger.debug("=== API Request ===")
-        self.logger.debug(f"URL: {self.base_url}/chat/completions")
-        self.logger.debug(f"Headers: {headers}")
-        self.logger.debug(f"Payload: {payload}")
+        self.logger.info("=== API Request ===")
+        self.logger.info(f"URL: {self.base_url}/chat/completions")
+        self.logger.info(f"Headers: {headers}")
+        self.logger.info(f"API Request payload: {json.dumps(payload, indent=2)}")
 
         try:
             if stream:
@@ -95,7 +145,7 @@ class OpenAICompatibleClient:
                     stream=True,
                 )
                 response.raise_for_status()
-                return sseclient.SSEClient(response)
+                return create_sse_client(response)
             else:
                 response = requests.post(
                     f"{self.base_url}/chat/completions", json=payload, headers=headers
@@ -103,7 +153,7 @@ class OpenAICompatibleClient:
                 response.raise_for_status()
 
                 response_data = response.json()
-                result = response_data["choices"][0]["message"]["content"]
+                result = str(response_data["choices"][0]["message"]["content"])
 
                 self.logger.debug("=== API Response ===")
                 self.logger.debug(f"Response: {result[:200]}...")
@@ -182,7 +232,7 @@ class OpenAICompatibleClient:
         stop: Optional[Union[str, List[str]]] = None,
         stream: bool = False,
         seed: Optional[int] = None,
-    ) -> Union[str, sseclient.SSEClient]:
+    ) -> SSEResponse:
         """
         Generate a text completion using the API.
 
@@ -201,7 +251,7 @@ class OpenAICompatibleClient:
         Returns:
             Either a string response or an SSEClient for streaming
         """
-        payload = {
+        payload: PayloadDict = {
             "model": model,
             "prompt": prompt,
             "temperature": temperature,
@@ -232,7 +282,7 @@ class OpenAICompatibleClient:
                     stream=True,
                 )
                 response.raise_for_status()
-                return sseclient.SSEClient(response)
+                return create_sse_client(response)
             else:
                 response = requests.post(
                     f"{self.base_url}/completions", json=payload, headers=headers
@@ -240,7 +290,7 @@ class OpenAICompatibleClient:
                 response.raise_for_status()
 
                 response_data = response.json()
-                result = response_data["choices"][0]["text"]
+                result = str(response_data["choices"][0]["text"])
 
                 return result
 
