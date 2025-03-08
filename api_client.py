@@ -14,7 +14,7 @@ from typing import (
 )
 
 import requests
-import sseclient
+import sseclient  # type: ignore[import-untyped]
 from requests import Response
 
 
@@ -55,7 +55,7 @@ def create_sse_client(response: Response) -> SSEClient:
                 yield chunk
 
     # Create SSE client from the generator
-    return sseclient.SSEClient(generate_bytes())
+    return cast(SSEClient, sseclient.SSEClient(generate_bytes()))
 
 
 class OpenAICompatibleClient:
