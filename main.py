@@ -21,6 +21,7 @@ from typing import (
 )
 
 import discord
+import ollama
 from discord.abc import GuildChannel, Messageable, PrivateChannel
 from discord.channel import DMChannel, TextChannel
 from discord.ext import commands
@@ -36,7 +37,6 @@ if TYPE_CHECKING:
 
 import config
 import system_prompt
-from api_client import OpenAICompatibleClient
 from system_prompt import get_system_prompt
 
 # Set up logging
@@ -70,7 +70,7 @@ class LineStatus(Enum):
 
 
 class DeepBot(commands.Bot):
-    """Discord bot that uses streaming responses from an LLM API."""
+    """Discord bot that uses streaming responses from Ollama."""
 
     def __init__(self) -> None:
         """Initialize the bot."""
@@ -83,8 +83,9 @@ class DeepBot(commands.Bot):
         # Use mention as the command prefix
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
 
-        self.api_client = OpenAICompatibleClient(config.API_URL)
-        logger.info("Using OpenAI-compatible API client")
+        # Initialize Ollama client
+        self.api_client = ollama.Client(host=config.API_URL)
+        logger.info("Using Ollama API client")
 
         # Store conversation history for each channel
         self.conversation_history: Dict[int, List[Dict[str, str]]] = {}
@@ -329,11 +330,7 @@ class DeepBot(commands.Bot):
         @self.command(name="info")
         async def info_command(ctx: Context[Bot]) -> None:
             """Display information about the bot configuration."""
-            backend_type = (
-                "Echo Backend (Test Mode)"
-                if os.environ.get("USE_ECHO_BACKEND") == "1"
-                else "OpenAI-compatible API"
-            )
+            backend_type = "Ollama"
 
             info_text = (
                 f"**DeepBot Configuration**\n\n"
@@ -866,82 +863,59 @@ class DeepBot(commands.Bot):
             logger.info(
                 f"History length: {len(self.conversation_history[channel_id])} messages"
             )
-            logger.info(f"Max tokens setting: {config.MAX_TOKENS}")
 
-            response = self.api_client.chat_completion(
-                messages=self.conversation_history[channel_id],
+            stream = self.api_client.chat(  # pyright: ignore
                 model=str(config.MODEL_NAME),
-                temperature=float(config.TEMPERATURE),
-                max_tokens=int(config.MAX_TOKENS) if config.MAX_TOKENS != -1 else None,
-                top_p=float(config.TOP_P),
-                presence_penalty=float(config.PRESENCE_PENALTY),
-                frequency_penalty=float(config.FREQUENCY_PENALTY),
-                seed=int(config.SEED) if config.SEED != -1 else None,
+                messages=self.conversation_history[channel_id],
                 stream=True,
+                keep_alive=-1,
+                options={
+                    "temperature": float(config.TEMPERATURE),
+                    "top_p": float(config.TOP_P),
+                    "presence_penalty": float(config.PRESENCE_PENALTY),
+                    "frequency_penalty": float(config.FREQUENCY_PENALTY),
+                    "seed": int(config.SEED) if config.SEED != -1 else None,
+                },
             )
-
-            # Handle both string responses and SSE client responses
-            if isinstance(response, str):
-                # Handle non-streaming response
-                yield (LineStatus.COMPLETE, response)
-                return
-
-            if not hasattr(response, "events"):
-                raise RuntimeError("SSE client does not support events streaming")
 
             # Variables to track streaming state
             full_response = ""  # Complete response for history
             chunk_count = 0
             current_line = ""  # Current line being built
-            # Track if current line has non-whitespace content
             has_non_whitespace = False
 
             # Process streaming response
-            for event in response.events():
+            for chunk in stream:
                 try:
                     chunk_count += 1
 
-                    # Handle [DONE] message specially
-                    if event.data == "[DONE]":
-                        continue
+                    if "message" in chunk and "content" in chunk["message"]:
+                        content = chunk["message"]["content"]
+                        current_line += content
+                        full_response += content
 
-                    data = json.loads(event.data)
-                    logger.debug(f"Received chunk {chunk_count}: {data}")
+                        # Check if we've received non-whitespace content
+                        if not has_non_whitespace and content.strip():
+                            has_non_whitespace = True
+                            # Signal start of new line with content
+                            yield (LineStatus.ACCUMULATING, "")
 
-                    if "choices" in data and len(data["choices"]) > 0:
-                        if (
-                            "delta" in data["choices"][0]
-                            and "content" in data["choices"][0]["delta"]
-                        ):
-                            content = data["choices"][0]["delta"]["content"]
-                            current_line += content
-                            full_response += content
+                        # Log every 100 chunks
+                        if chunk_count % 100 == 0:
+                            logger.info(
+                                f"Processed {chunk_count} chunks, current length: {len(full_response)}"
+                            )
 
-                            # Check if we've received non-whitespace content
-                            if not has_non_whitespace and content.strip():
-                                has_non_whitespace = True
-                                # Signal start of new line with content
-                                yield (LineStatus.ACCUMULATING, "")
+                        # Check for newlines in current line
+                        while "\n" in current_line:
+                            # Split at first newline
+                            to_send, current_line = current_line.split("\n", 1)
+                            has_non_whitespace = False  # Reset for next line
 
-                            # Log every 100 chunks
-                            if chunk_count % 100 == 0:
-                                logger.info(
-                                    f"Processed {chunk_count} chunks, current length: {len(full_response)}"
-                                )
+                            # Only yield if we have non-empty content
+                            if to_send.strip():
+                                yield (LineStatus.COMPLETE, to_send)
 
-                            # Check for newlines in current line
-                            while "\n" in current_line:
-                                # Split at first newline
-                                to_send, current_line = current_line.split("\n", 1)
-                                has_non_whitespace = False  # Reset for next line
-
-                                # Only yield if we have non-empty content
-                                if to_send.strip():
-                                    yield (LineStatus.COMPLETE, to_send)
-
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to decode chunk: {e}: {repr(event.data)}")
-                    continue
                 except Exception as e:
                     logger.error(f"Error processing chunk: {str(e)}")
                     continue

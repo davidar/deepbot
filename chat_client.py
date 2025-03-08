@@ -1,41 +1,34 @@
 #!/usr/bin/env python3
 
 import sys
-from typing import Dict, Iterator, List, Optional, TypedDict, cast
+from typing import Dict, List
 
-from llama_cpp import (
-    ChatCompletionRequestMessage,
-    CreateChatCompletionStreamResponse,
-    Llama,
-)
+import ollama
 from rich.console import Console
-
-
-class ChatChoice(TypedDict):
-    delta: Dict[str, Optional[str]]
-
-
-class ChatResponse(TypedDict):
-    choices: List[ChatChoice]
 
 
 def main() -> None:
     console = Console()
-    console.print("[bold blue]Welcome to the Local Llama Chat Client![/bold blue]")
+    console.print("[bold blue]Welcome to the Ollama Chat Client![/bold blue]")
     console.print("Type your messages and press Enter to chat. Press Ctrl+C to exit.\n")
 
-    repo_id = "bartowski/Mistral-Small-24B-Instruct-2501-GGUF"
-    filename = "*Q4_K_M.gguf"
+    model_name = "mistral-small"
 
-    # Initialize the model
+    # Initialize the client
+    client = ollama.Client(host="http://localhost:11434")
+
     try:
-        llm = Llama.from_pretrained(repo_id, filename)  # pyright: ignore
-        console.print("[green]Model loaded successfully![/green]\n")
+        # Test connection by getting model info
+        client.show(model_name)
+        console.print("[green]Connected to Ollama successfully![/green]\n")
     except Exception as e:
-        console.print(f"[red]Failed to load model: {e}[/red]")
+        console.print(f"[red]Failed to connect to Ollama: {e}[/red]")
+        console.print(
+            "[yellow]Make sure Ollama is running and the model is pulled using 'ollama pull {model_name}'[/yellow]"
+        )
         return
 
-    messages: List[ChatCompletionRequestMessage] = []
+    messages: List[Dict[str, str]] = []
     try:
         while True:
             # Get user input
@@ -47,28 +40,18 @@ def main() -> None:
             # Print assistant prefix
             console.print("[bold purple]Assistant:[/bold purple] ", end="")
 
-            # Get and display response
             full_response = ""
-
             try:
-                completion = cast(
-                    Iterator[CreateChatCompletionStreamResponse],
-                    llm.create_chat_completion(
-                        messages=messages,
-                        stream=True,
-                        top_k=40,
-                        top_p=0.95,
-                        min_p=0.05,
-                        temperature=0.8,
-                        repeat_penalty=1.1,
-                        max_tokens=2048,
-                    ),
+                # Stream the response
+                stream = client.chat(  # pyright: ignore
+                    model=model_name,
+                    messages=messages,
+                    stream=True,
                 )
 
-                for chunk in completion:
-                    content = chunk["choices"][0]["delta"].get("content")
+                for chunk in stream:
+                    content = chunk["message"]["content"]
                     if content:
-                        content = str(content)
                         full_response += content
                         console.print(content, end="")
                         sys.stdout.flush()
