@@ -1,6 +1,10 @@
 # Environment variables
 .env
 
+# System files
+system_prompt.txt
+reaction_data.json
+
 # Python
 __pycache__/
 *.py[cod]
@@ -35,4 +39,5 @@ ENV/
 .idea/
 .vscode/
 *.swp
-*.swo 
+*.swo
+*.bak*

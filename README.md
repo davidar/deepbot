@@ -2,6 +2,8 @@
 
 A Discord bot that uses a local LLM API to generate streaming responses based on conversation history.
 
+*Written by AI (Claude/Cursor), for AI (Mistral Small 3).*
+
 ## Setup
 
 1. Run the setup script to create a virtual environment and install dependencies:
