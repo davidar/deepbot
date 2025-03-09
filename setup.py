@@ -3,7 +3,6 @@ import platform
 import subprocess
 import sys
 import venv
-from pathlib import Path
 from typing import Literal
 
 # Type hint for platform.system()
@@ -70,30 +69,46 @@ def setup_env_file(env_template: str = ".env.template", env_file: str = ".env") 
             env.write(template.read())
 
 
-def create_activation_scripts(venv_path: str) -> None:
-    """Create activation scripts for different shells."""
-    print("Creating activation scripts...")
-    scripts_dir = Path(venv_path) / "scripts"
-    scripts_dir.mkdir(exist_ok=True)
+def setup_systemd_service() -> None:
+    """Set up the systemd service for the bot."""
+    if platform.system() != "Linux":
+        print("Skipping systemd service setup - not on Linux")
+        return
 
-    # Create activate.sh for bash/zsh
-    activate_sh = scripts_dir / "activate.sh"
-    activate_sh.write_text(f'source "{venv_path}/bin/activate"\n')
+    # Create service file content with the current directory
+    current_dir = os.path.abspath(os.path.dirname(__file__))
+    service_content = f"""[Unit]
+Description=DeepBot Discord Bot with Local LLM Integration
+After=network.target
 
-    # Create activate.ps1 for PowerShell
-    activate_ps1 = scripts_dir / "activate.ps1"
-    activate_ps1.write_text(f'& "{venv_path}\\Scripts\\Activate.ps1"\n')
+[Service]
+Type=simple
+WorkingDirectory={current_dir}
+Environment=PYTHONUNBUFFERED=1
+ExecStart={current_dir}/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5s
 
-    # Create activate.bat for Windows Command Prompt
-    activate_bat = scripts_dir / "activate.bat"
-    activate_bat.write_text(f'@echo off\ncall "{venv_path}\\Scripts\\activate.bat"\n')
+[Install]
+WantedBy=default.target
+"""
 
-    # Make the shell script executable on Unix-like systems
-    system: PlatformSystem = platform.system()  # type: ignore[assignment]
-    if system != "Windows":
-        os.chmod("activate.sh", 0o755)
+    # Ensure systemd user directory exists
+    systemd_dir = os.path.expanduser("~/.config/systemd/user")
+    os.makedirs(systemd_dir, exist_ok=True)
 
-    print("Created activation scripts: activate.bat and activate.sh")
+    # Write service file
+    service_path = os.path.join(systemd_dir, "deepbot.service")
+    with open(service_path, "w") as f:
+        f.write(service_content)
+
+    print(f"Created systemd service file at {service_path}")
+    print("To manage the service, use:")
+    print("  systemctl --user enable deepbot.service  # Enable on startup")
+    print("  systemctl --user start deepbot.service   # Start the service")
+    print("  systemctl --user stop deepbot.service    # Stop the service")
+    print("  systemctl --user restart deepbot.service # Restart the service")
+    print("  systemctl --user status deepbot.service  # Check service status")
 
 
 def main() -> None:
@@ -113,23 +128,19 @@ def main() -> None:
     # Install dependencies in virtual environment
     install_dependencies(venv_python)
 
-    # Create activation scripts
-    create_activation_scripts(venv_path)
-
     # Set up environment file
     setup_env_file()
+
+    # Set up systemd service
+    setup_systemd_service()
 
     print("\nSetup complete!")
     print("Next steps:")
     print("1. Edit the .env file with your Discord bot token")
-    print("2. Activate the virtual environment:")
-    system: PlatformSystem = platform.system()  # type: ignore[assignment]
-    if system == "Windows":
-        print("   - Run: activate.bat")
-    else:
-        print("   - Run: source activate.sh")
-    print("3. Make sure LM Studio is running with the API enabled")
+    print("2. Activate the virtual environment")
+    print("3. Make sure ollama is running with the API enabled")
     print("4. Run the bot with: python bot.py")
+    print("   Or use systemd to manage the service (see instructions above)")
 
 
 if __name__ == "__main__":

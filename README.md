@@ -19,6 +19,50 @@ A Discord bot that uses a local LLM API to generate streaming responses based on
    python bot.py
    ```
 
+## Service Management (Linux)
+
+On Linux systems, the setup script automatically configures a systemd user service. Here's how to manage it:
+
+### Basic Service Commands
+```bash
+# Enable the service to start on boot
+systemctl --user enable deepbot.service
+
+# Start the service
+systemctl --user start deepbot.service
+
+# Stop the service
+systemctl --user stop deepbot.service
+
+# Restart the service
+systemctl --user restart deepbot.service
+
+# Check service status
+systemctl --user status deepbot.service
+```
+
+### Viewing Logs
+```bash
+# View recent logs
+journalctl --user-unit deepbot.service
+
+# Follow logs in real-time
+journalctl --user-unit deepbot.service -f
+
+# View logs since last boot
+journalctl --user-unit deepbot.service -b
+
+# View logs with timestamps
+journalctl --user-unit deepbot.service --output=short-precise
+```
+
+### Troubleshooting
+- If the service fails to start, check logs using the commands above
+- Ensure the `.env` file is properly configured
+- Verify ollama is running and accessible
+- Check permissions on the bot directory and files
+- Run `systemctl --user daemon-reload` after making changes to the service file
+
 ## Configuration
 
 The bot's behavior can be customized by modifying the following variables in `config.py`:
