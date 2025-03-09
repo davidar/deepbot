@@ -125,9 +125,10 @@ def serialize_dataclass(obj: Any) -> Optional[Dict[str, Any]]:
     if obj is None:
         return None
     if not hasattr(obj, "__dataclass_fields__"):
-        return obj
+        return cast(Optional[Dict[str, Any]], obj)
     result: Dict[str, Any] = {}
-    for field in obj.__dataclass_fields__:  # type: ignore
+    fields = cast(Dict[str, Any], obj.__dataclass_fields__)
+    for field in fields:
         value = getattr(obj, field)
         # Always include certain fields, even if None
         if value is not None or field in {
@@ -140,11 +141,11 @@ def serialize_dataclass(obj: Any) -> Optional[Dict[str, Any]]:
             elif isinstance(value, list):
                 result[field] = [
                     (
-                        serialize_dataclass(item)
-                        if hasattr(item, "__dataclass_fields__")  # type: ignore
+                        serialize_dataclass(cast(Any, item))
+                        if hasattr(cast(Any, item), "__dataclass_fields__")
                         else item
                     )
-                    for item in value  # type: ignore
+                    for item in value  # pyright: ignore
                 ]
             else:
                 result[field] = value
@@ -267,7 +268,7 @@ class StoredMessage:
                 "description": embed.description,
                 "url": embed.url,
                 "timestamp": embed.timestamp.isoformat() if embed.timestamp else None,
-                "color": embed.color.value if embed.color else None,
+                "color": embed.colour.value if embed.colour else None,
                 "footer": (
                     {
                         "text": embed.footer.text if embed.footer else None,
