@@ -195,19 +195,20 @@ def setup_commands(
             logger.info(f"Current line count: {len(lines)}")
             logger.info(f"Removed lines from add operation: {removed_lines}")
 
-            await ctx.send(f"-# Added line to system prompt: `{line}`")
+            message = [f"-# Added line to system prompt: `{line}`"]
 
             # If any lines were removed during trimming, show them
             if removed_lines:
                 logger.info(f"Displaying {len(removed_lines)} removed lines to user")
                 for line in removed_lines:
-                    await ctx.send(
+                    message.append(
                         f"-# Removed random line from system prompt: `{line}`"
                     )
             else:
                 logger.info("No lines were removed during add operation")
 
-            await ctx.send(f"-# Updated prompt now has {len(lines)} lines")
+            message.append(f"-# Updated prompt now has {len(lines)} lines")
+            await ctx.send("\n".join(message))
 
             # Update all channels with new system prompt
             logger.info("Updating channel prompts")
@@ -227,8 +228,11 @@ def setup_commands(
                 return
 
             lines = system_prompt.remove_line(line)
-            await ctx.send(f"-# Removed line from system prompt: `{line}`")
-            await ctx.send(f"-# Updated prompt now has {len(lines)} lines")
+            message = [
+                f"-# Removed line from system prompt: `{line}`",
+                f"-# Updated prompt now has {len(lines)} lines",
+            ]
+            await ctx.send("\n".join(message))
             # Update all channels with new system prompt
             for channel_id in conversation_manager.conversation_history:
                 if conversation_manager.conversation_history[channel_id]:
@@ -249,9 +253,10 @@ def setup_commands(
                 return
 
             lines, removed_lines = system_prompt.trim_prompt(max_lines)
+            message = [f"-# Trimmed prompt to {len(lines)} lines"]
             for line in removed_lines:
-                await ctx.send(f"-# Removed random line from system prompt: `{line}`")
-            await ctx.send(f"-# Trimmed prompt to {len(lines)} lines")
+                message.append(f"-# Removed random line from system prompt: `{line}`")
+            await ctx.send("\n".join(message))
 
             # Update all channels with new system prompt
             for channel_id in conversation_manager.conversation_history:
@@ -290,25 +295,49 @@ def setup_commands(
         await ctx.send("-# 🤫 Stopped all responses in this channel")
 
     @bot.command(name="reactions")
-    async def reactions_command(ctx: Context[Bot]) -> None:
-        """Display reaction statistics for the bot's messages in the current channel."""
-        channel_id = ctx.channel.id
-        message_reactions = reaction_manager.get_channel_stats(channel_id)
+    async def reactions_command(ctx: Context[Bot], scope: str = "channel") -> None:
+        """Display reaction statistics for the bot's messages.
 
-        if not message_reactions:
-            await ctx.send("-# No reaction data available for this channel yet")
+        Args:
+            scope: Either "channel" (default) or "global" to show stats across all channels
+        """
+        if scope.lower() not in ["channel", "global"]:
+            await ctx.send('-# Invalid scope. Use "channel" or "global"')
             return
 
-        # Create a summary of reactions
-        channel_name = (
-            ctx.channel.name if isinstance(ctx.channel, discord.TextChannel) else "DM"
-        )
-        message = [f"-# Reaction statistics for #{channel_name}"]
-        summary = reaction_manager.format_reaction_summary(message_reactions)
-        for line in summary.split("\n"):
-            if line.strip():
-                message.append(f"-# {line}")
-        await ctx.send("\n".join(message))
+        if scope.lower() == "global":
+            channel_scores = reaction_manager.get_global_stats()
+            if not channel_scores:
+                await ctx.send("-# No reaction data available yet")
+                return
+
+            message = ["-# Global reaction statistics:"]
+            summary = reaction_manager.format_global_summary(channel_scores)
+            for line in summary.split("\n"):
+                if line.strip():
+                    message.append(f"-# {line}")
+            await ctx.send("\n".join(message))
+
+        else:  # channel scope
+            channel_id = ctx.channel.id
+            message_reactions = reaction_manager.get_channel_stats(channel_id)
+
+            if not message_reactions:
+                await ctx.send("-# No reaction data available for this channel yet")
+                return
+
+            # Create a summary of reactions
+            channel_name = (
+                ctx.channel.name
+                if isinstance(ctx.channel, discord.TextChannel)
+                else "DM"
+            )
+            message = [f"-# Reaction statistics for #{channel_name}"]
+            summary = reaction_manager.format_reaction_summary(message_reactions)
+            for line in summary.split("\n"):
+                if line.strip():
+                    message.append(f"-# {line}")
+            await ctx.send("\n".join(message))
 
     # Add custom command error handler
     @bot.event
