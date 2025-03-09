@@ -457,17 +457,38 @@ class DeepBot(commands.Bot):
                 file = discord.File("system_prompt.txt")
                 await ctx.send("**Current System Prompt:**", file=file)
                 await ctx.send(
-                    "Use `prompt add <line>` to add a line or `prompt remove <line>` to remove a line."
+                    "Use `prompt add <line>` to add a line, `prompt remove <line>` to remove a line, or `prompt trim` to trim to max length."
                 )
                 return
 
             if action.lower() == "add" and line:
-                # Add a new line
-                lines = system_prompt.add_line(line)
+                # Add a new line and get any removed lines from trimming
+                lines, removed_lines = system_prompt.add_line(line)
+                logger.info(f"Added line to prompt: {line}")
+                logger.info(f"Current line count: {len(lines)}")
+                logger.info(f"Removed lines from add operation: {removed_lines}")
+
                 await ctx.send(
                     f"Added line to system prompt: `{line}`\n\nUpdated prompt now has {len(lines)} lines."
                 )
+
+                # If any lines were removed during trimming, show them
+                if removed_lines:
+                    logger.info(
+                        f"Displaying {len(removed_lines)} removed lines to user"
+                    )
+                    max_lines = int(config.get_option("max_prompt_lines", 60))
+                    removed_lines_msg = (
+                        f"**Trimmed prompt to {max_lines} lines. Removed lines:**\n"
+                        + "\n".join(f"- {line}" for line in removed_lines)
+                    )
+                    logger.info(f"Removed lines message: {removed_lines_msg}")
+                    await ctx.send(removed_lines_msg)
+                else:
+                    logger.info("No lines were removed during add operation")
+
                 # Update all channels with new system prompt
+                logger.info("Updating channel prompts")
                 for channel_id in self.conversation_history:
                     if self.conversation_history[channel_id]:
                         channel = self.get_channel(channel_id)
@@ -496,9 +517,34 @@ class DeepBot(commands.Bot):
                                 get_system_prompt(self.get_server_name(channel))
                             )
 
+            elif action.lower() == "trim":
+                # Trim the prompt to max length
+                max_lines = int(config.get_option("max_prompt_lines", 60))
+                lines = system_prompt.load_system_prompt()
+                if len(lines) <= max_lines:
+                    await ctx.send(
+                        f"Prompt is already within limit ({len(lines)} lines)."
+                    )
+                    return
+
+                lines, removed_lines = system_prompt.trim_prompt(max_lines)
+                await ctx.send(
+                    f"**Trimmed prompt to {max_lines} lines. Removed lines:**\n"
+                    + "\n".join(f"- {line}" for line in removed_lines)
+                )
+
+                # Update all channels with new system prompt
+                for channel_id in self.conversation_history:
+                    if self.conversation_history[channel_id]:
+                        channel = self.get_channel(channel_id)
+                        if channel:  # Check if channel exists
+                            self.conversation_history[channel_id][0]["content"] = (
+                                get_system_prompt(self.get_server_name(channel))
+                            )
+
             else:
                 await ctx.send(
-                    "Invalid command. Use `prompt` to view, `prompt add <line>` to add, or `prompt remove <line>` to remove."
+                    "Invalid command. Use `prompt` to view, `prompt add <line>` to add, `prompt remove <line>` to remove, or `prompt trim` to trim to max length."
                 )
 
         @self.command(name="shutup")

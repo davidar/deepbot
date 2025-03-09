@@ -7,5 +7,6 @@
     "seed": -1,
     "max_history": 10,
     "history_fetch_limit": 50,
-    "max_response_lines": 10
+    "max_response_lines": 15,
+    "max_prompt_lines": 60
 }
