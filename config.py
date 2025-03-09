@@ -49,8 +49,5 @@ def set_option(name: str, value: Union[float, int]) -> None:
     save_model_options(options)
 
 
-# Load model options
-MODEL_OPTIONS = load_model_options()
-
 # Example conversation for initializing new channels
 EXAMPLE_CONVERSATION = json.load(open("example_conversation.json"))

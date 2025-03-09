@@ -81,7 +81,7 @@ class DeepBot(commands.Bot):
 
         # Get or initialize conversation history for this channel
         channel_id = message.channel.id
-        if channel_id not in self.conversation_manager.conversation_history:
+        if not self.conversation_manager.has_history(channel_id):
             # For new channels, initialize history by fetching recent messages
             if isinstance(message.channel, discord.TextChannel):
                 await self.conversation_manager.initialize_channel_history(
@@ -89,9 +89,7 @@ class DeepBot(commands.Bot):
                 )
             else:
                 # For DMs or other channel types, just add initial messages
-                self.conversation_manager.conversation_history[channel_id] = (
-                    self.conversation_manager.get_initial_messages(message.channel)
-                )
+                self.conversation_manager.reset_to_initial(message.channel)
 
         # Check if this message is directed at the bot
         is_dm = isinstance(message.channel, discord.DMChannel)
@@ -126,43 +124,18 @@ class DeepBot(commands.Bot):
         # Clean up the content by replacing Discord mentions with usernames
         content = clean_message_content(message)
 
-        # Check if this message is already the last message in history
+        # Format the message content with username
         message_content = f"{message.author.display_name}: {content}"
-        history = self.conversation_manager.conversation_history[channel_id]
-        is_duplicate = (
-            history
-            and history[-1]["role"] == "user"
-            and history[-1]["content"] == message_content
-        )
 
-        # Add user message to history if it's not a duplicate
-        if not is_duplicate:
-            self.conversation_manager.conversation_history[channel_id].append(
-                {"role": "user", "content": message_content}
-            )
-
-        # Trim history if it exceeds the maximum length
-        max_history = int(config.get_option("max_history", 10))
-        if (
-            len(self.conversation_manager.conversation_history[channel_id])
-            > max_history
+        # Check for duplicates and add to history if not a duplicate
+        if not self.conversation_manager.is_duplicate_message(
+            channel_id, "user", message_content
         ):
-            # Keep the system message if it exists
-            if (
-                self.conversation_manager.conversation_history[channel_id][0]["role"]
-                == "system"
-            ):
-                self.conversation_manager.conversation_history[channel_id] = [
-                    self.conversation_manager.conversation_history[channel_id][0]
-                ] + self.conversation_manager.conversation_history[channel_id][
-                    -(max_history - 1) :
-                ]
-            else:
-                self.conversation_manager.conversation_history[channel_id] = (
-                    self.conversation_manager.conversation_history[channel_id][
-                        -max_history:
-                    ]
-                )
+            self.conversation_manager.add_message(channel_id, "user", message_content)
+
+        # Trim history if needed
+        max_history = int(config.get_option("max_history", 10))
+        self.conversation_manager.trim_history(channel_id, max_history)
 
         # Only respond to messages that mention the bot or are direct messages
         if not is_directed_at_bot:

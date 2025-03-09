@@ -78,8 +78,6 @@ def setup_commands(
 
                 # Update the option
                 config.set_option(option_name, float_value)
-                # Reload options
-                config.MODEL_OPTIONS.update(config.load_model_options())
                 await ctx.send(f"-# Updated option `{option_name}` to `{float_value}`")
             except ValueError:
                 await ctx.send(f"-# Invalid value, please provide a number")
@@ -95,8 +93,8 @@ def setup_commands(
     async def reset_history(ctx: Context[Bot]) -> None:
         """Reset the conversation history for the current channel."""
         channel_id = ctx.channel.id
-        if channel_id in conversation_manager.conversation_history:
-            conversation_manager.conversation_history[channel_id] = []
+        if conversation_manager.has_history(channel_id):
+            conversation_manager.clear_history(channel_id)
             await ctx.send("-# Conversation history has been reset")
         else:
             await ctx.send("-# No conversation history to reset")
@@ -113,16 +111,11 @@ def setup_commands(
         await ctx.send("-# Refreshing conversation history from channel messages...")
 
         try:
-            # Clear existing history
-            channel_id = ctx.channel.id
-            conversation_manager.conversation_history[channel_id] = []
-
-            # Re-initialize with fresh data
+            # Clear existing history and re-initialize
+            conversation_manager.clear_history(ctx.channel.id)
             await conversation_manager.initialize_channel_history(ctx.channel)
 
-            history_count = len(
-                conversation_manager.conversation_history[ctx.channel.id]
-            )
+            history_count = conversation_manager.get_history_length(ctx.channel.id)
             await ctx.send(
                 f"-# Conversation history refreshed! Now tracking {history_count-1} messages (plus system message)"
             )
@@ -134,18 +127,14 @@ def setup_commands(
     async def raw_history(ctx: Context[Bot]) -> None:
         """Display the raw conversation history for debugging."""
         channel_id = ctx.channel.id
-        if (
-            channel_id not in conversation_manager.conversation_history
-            or not conversation_manager.conversation_history[channel_id]
-        ):
+        if not conversation_manager.has_history(channel_id):
             await ctx.send("-# No conversation history found for this channel")
             return
 
-        history = conversation_manager.conversation_history[channel_id]
+        history = conversation_manager.get_history(channel_id)
         json_data = json.dumps(history, indent=2)
 
         # Create a discord.File object with the JSON data
-        # Convert string to bytes for discord.File
         buffer = io.BytesIO(json_data.encode("utf-8"))
         file = discord.File(
             buffer,
@@ -158,11 +147,8 @@ def setup_commands(
     async def wipe_memory(ctx: Context[Bot]) -> None:
         """Temporarily wipe the bot's memory while keeping the system message."""
         channel_id = ctx.channel.id
-        if channel_id in conversation_manager.conversation_history:
-            # Keep only the initial messages (system message and examples)
-            conversation_manager.conversation_history[channel_id] = (
-                conversation_manager.get_initial_messages(ctx.channel)
-            )
+        if conversation_manager.has_history(channel_id):
+            conversation_manager.reset_to_initial(ctx.channel)
             await ctx.send(
                 "-# 🧹 Memory wiped! I'm starting fresh, but I'll keep my personality intact!"
             )
@@ -212,13 +198,12 @@ def setup_commands(
 
             # Update all channels with new system prompt
             logger.info("Updating channel prompts")
-            for channel_id in conversation_manager.conversation_history:
-                if conversation_manager.conversation_history[channel_id]:
-                    channel = bot.get_channel(channel_id)
-                    if channel:  # Check if channel exists
-                        conversation_manager.conversation_history[channel_id][0][
-                            "content"
-                        ] = system_prompt.get_system_prompt(get_server_name(channel))
+            for channel in bot.get_all_channels():
+                if conversation_manager.has_history(channel.id):
+                    new_prompt = system_prompt.get_system_prompt(
+                        get_server_name(channel)
+                    )
+                    conversation_manager.update_system_prompt(channel.id, new_prompt)
 
         elif action.lower() == "remove" and line:
             # Remove a line
@@ -233,14 +218,14 @@ def setup_commands(
                 f"-# Updated prompt now has {len(lines)} lines",
             ]
             await ctx.send("\n".join(message))
+
             # Update all channels with new system prompt
-            for channel_id in conversation_manager.conversation_history:
-                if conversation_manager.conversation_history[channel_id]:
-                    channel = bot.get_channel(channel_id)
-                    if channel:  # Check if channel exists
-                        conversation_manager.conversation_history[channel_id][0][
-                            "content"
-                        ] = system_prompt.get_system_prompt(get_server_name(channel))
+            for channel in bot.get_all_channels():
+                if conversation_manager.has_history(channel.id):
+                    new_prompt = system_prompt.get_system_prompt(
+                        get_server_name(channel)
+                    )
+                    conversation_manager.update_system_prompt(channel.id, new_prompt)
 
         elif action.lower() == "trim":
             # Trim the prompt to max length
@@ -259,13 +244,12 @@ def setup_commands(
             await ctx.send("\n".join(message))
 
             # Update all channels with new system prompt
-            for channel_id in conversation_manager.conversation_history:
-                if conversation_manager.conversation_history[channel_id]:
-                    channel = bot.get_channel(channel_id)
-                    if channel:  # Check if channel exists
-                        conversation_manager.conversation_history[channel_id][0][
-                            "content"
-                        ] = system_prompt.get_system_prompt(get_server_name(channel))
+            for channel in bot.get_all_channels():
+                if conversation_manager.has_history(channel.id):
+                    new_prompt = system_prompt.get_system_prompt(
+                        get_server_name(channel)
+                    )
+                    conversation_manager.update_system_prompt(channel.id, new_prompt)
 
         else:
             await ctx.send(
