@@ -1,4 +1,3 @@
-import datetime
 import logging
 import random
 from typing import List, Optional, Tuple
@@ -122,12 +121,3 @@ def trim_prompt(
     logger.info(f"Removed lines: {removed_lines}")
 
     return lines, removed_lines
-
-
-def get_system_prompt(server_name: str) -> str:
-    """Get the complete system prompt as a string, formatted with the given kwargs."""
-    prompt = "\n".join(load_system_prompt())
-    current_time = datetime.datetime.now().strftime("%A, %B %d, %Y")
-    return (
-        f"# Discord Server: {server_name}\n# Current Time: {current_time}\n\n{prompt}"
-    )

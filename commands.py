@@ -290,10 +290,15 @@ def setup_commands(
                 else "DM"
             )
             message = [f"-# Reaction statistics for #{channel_name}"]
-            summary = reaction_manager.format_reaction_summary(message_reactions)
-            for line in summary.split("\n"):
-                if line.strip():
-                    message.append(f"-# {line}")
+            channel_summary = reaction_manager.format_reaction_summary(
+                message_reactions
+            )
+            if channel_summary:
+                for line in channel_summary.split("\n"):
+                    if line.strip():
+                        message.append(f"-# {line}")
+            else:
+                message.append("-# No reactions yet.")
             await ctx.send("\n".join(message))
 
     # Add custom command error handler

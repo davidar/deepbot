@@ -1,5 +1,6 @@
 """Context building for LLM interactions."""
 
+import datetime
 import logging
 from typing import TYPE_CHECKING, List, Literal, Optional, TypedDict
 
@@ -7,7 +8,8 @@ from discord import Message
 from ollama import Message as LLMMessage
 
 import config
-import system_prompt
+from reactions import ReactionManager
+from system_prompt import load_system_prompt
 from utils import clean_message_content, get_server_name
 
 if TYPE_CHECKING:
@@ -29,6 +31,14 @@ logger = logging.getLogger("deepbot.context")
 
 class ContextBuilder:
     """Builds LLM context from Discord messages."""
+
+    def __init__(self, reaction_manager: ReactionManager) -> None:
+        """Initialize the context builder.
+
+        Args:
+            reaction_manager: The reaction manager instance to use
+        """
+        self.reaction_manager = reaction_manager
 
     @staticmethod
     def is_automated_message(content: str) -> bool:
@@ -77,9 +87,31 @@ class ContextBuilder:
         Returns:
             System prompt message dict
         """
+        # Get reaction stats for the channel
+        channel_id = channel.id
+        message_reactions = self.reaction_manager.get_channel_stats(channel_id)
+        reaction_summary = self.reaction_manager.format_reaction_summary(
+            message_reactions
+        )
+
+        # Format the complete prompt with server name, time and reactions
+        server_name = get_server_name(channel)
+        current_time = datetime.datetime.now().strftime("%A, %B %d, %Y")
+
+        prompt = [
+            f"# Discord Server: {server_name}",
+            f"# Current Time: {current_time}",
+            "",
+        ]
+
+        prompt.extend(load_system_prompt())
+
+        if reaction_summary and reaction_summary != "No reactions yet.":
+            prompt.append(f"\n# Channel Reactions:\n{reaction_summary}\n")
+
         return LLMMessage(
             role="system",
-            content=system_prompt.get_system_prompt(get_server_name(channel)),
+            content="\n".join(prompt),
         )
 
     def build_context(

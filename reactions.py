@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from discord import Message, Reaction, User
 
@@ -187,7 +187,7 @@ class ReactionManager:
         self,
         message_scores: List[Tuple[int, float]],
         limit: int = 5,
-    ) -> str:
+    ) -> Optional[str]:
         """Format reaction statistics into a summary string.
 
         Args:
@@ -199,7 +199,7 @@ class ReactionManager:
             Formatted summary string
         """
         if not message_scores:
-            return "No reactions yet."
+            return None
 
         summary = ""
         for msg_id, _score in message_scores[:limit]:
@@ -251,7 +251,11 @@ class ReactionManager:
             server_name = first_msg["info"]["server_name"]
 
             summary.append(f"\n#{channel_name} ({server_name}):")
-            summary.append(self.format_reaction_summary(messages, limit))
+            body = self.format_reaction_summary(messages, limit)
+            if body:
+                summary.append(body)
+            else:
+                summary.append("No reactions yet.")
 
         return "\n".join(summary)
 

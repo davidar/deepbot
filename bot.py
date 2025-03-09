@@ -48,7 +48,7 @@ class DeepBot(commands.Bot):
         # Initialize managers
         self.message_history = MessageHistoryManager()
         self.reaction_manager = ReactionManager()
-        self.context_builder = ContextBuilder()
+        self.context_builder = ContextBuilder(self.reaction_manager)
         self.llm_handler = LLMResponseHandler(self.api_client, self.user)
 
         # Set up commands
