@@ -59,24 +59,34 @@ journalctl --user-unit deepbot.service --output=short-precise
 ### Troubleshooting
 - If the service fails to start, check logs using the commands above
 - Ensure the `.env` file is properly configured
-- Verify ollama is running and accessible
+- Verify Ollama is running and accessible
 - Check permissions on the bot directory and files
 - Run `systemctl --user daemon-reload` after making changes to the service file
 
 ## Configuration
 
-The bot's behavior can be customized by modifying the following variables in `config.py`:
+The bot's configuration is split between environment variables and a JSON configuration file:
 
-- `API_URL`: URL of the LLM API (default: http://127.0.0.1:1234/v1)
-- `MODEL_NAME`: Name of the model to use (default: mistral-small-24b-instruct-2501)
-- `MAX_HISTORY`: Maximum number of messages to keep in history (default: 10)
-- `HISTORY_FETCH_LIMIT`: Maximum number of messages to fetch from channel history on startup (default: 50)
-- `TEMPERATURE`: Sampling temperature (default: 0.7)
-- `MAX_TOKENS`: Maximum tokens to generate (default: -1 for unlimited)
-- `TOP_P`: Top-p sampling parameter (default: 0.9)
-- `PRESENCE_PENALTY`: Presence penalty for generation (default: 0.0)
-- `FREQUENCY_PENALTY`: Frequency penalty for generation (default: 0.0)
-- `SEED`: Random seed for generation (default: -1 for random)
+### Environment Variables (`.env`)
+- `DISCORD_TOKEN`: Your Discord bot token
+
+### API Configuration (`config.py`)
+- `API_URL`: URL of the Ollama API (default: http://localhost:11434)
+- `MODEL_NAME`: Name of the model to use (default: mistral-small)
+
+### Model Options (`model_options.json`)
+The bot's behavior can be customized by modifying the options in `model_options.json`:
+
+- `temperature`: Controls randomness in responses (0.0 to 1.0)
+- `max_tokens`: Maximum tokens to generate (-1 for unlimited)
+- `top_p`: Top-p sampling parameter (0.0 to 1.0)
+- `presence_penalty`: Penalty for token presence (0.0 to 1.0)
+- `frequency_penalty`: Penalty for token frequency (0.0 to 1.0)
+- `seed`: Random seed for generation (-1 for random)
+- `max_history`: Maximum number of messages to keep in conversation history
+- `history_fetch_limit`: Maximum number of messages to fetch from channel history on startup
+- `max_response_lines`: Maximum number of lines in bot responses
+- `max_prompt_lines`: Maximum number of lines in user prompts
 
 ## Creating a Discord Bot
 
