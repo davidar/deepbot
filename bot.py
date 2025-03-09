@@ -1,6 +1,5 @@
 """Core Discord bot implementation."""
 
-import asyncio
 import logging
 
 import discord
@@ -9,9 +8,10 @@ from discord.ext import commands
 
 import config
 from commands import setup_commands
-from conversation import ConversationManager
+from context_builder import ContextBuilder
+from llm_streaming import LLMResponseHandler
+from message_history import MessageHistoryManager
 from reactions import ReactionManager
-from utils import clean_message_content
 
 # Set up logging
 logging.basicConfig(
@@ -46,11 +46,19 @@ class DeepBot(commands.Bot):
             raise RuntimeError("Bot user not initialized")
 
         # Initialize managers
-        self.conversation_manager = ConversationManager(self.api_client, self.user)
+        self.message_history = MessageHistoryManager()
         self.reaction_manager = ReactionManager()
+        self.context_builder = ContextBuilder()
+        self.llm_handler = LLMResponseHandler(self.api_client, self.user)
 
         # Set up commands
-        setup_commands(self, self.conversation_manager, self.reaction_manager)
+        setup_commands(
+            self,
+            self.message_history,
+            self.context_builder,
+            self.llm_handler,
+            self.reaction_manager,
+        )
 
         logger.info("Bot components initialized")
 
@@ -79,17 +87,10 @@ class DeepBot(commands.Bot):
         if message.author == self.user:
             return
 
-        # Get or initialize conversation history for this channel
         channel_id = message.channel.id
-        if not self.conversation_manager.has_history(channel_id):
-            # For new channels, initialize history by fetching recent messages
-            if isinstance(message.channel, discord.TextChannel):
-                await self.conversation_manager.initialize_channel_history(
-                    message.channel
-                )
-            else:
-                # For DMs or other channel types, just add initial messages
-                self.conversation_manager.reset_to_initial(message.channel)
+
+        # Get or initialize message history for this channel
+        await self.message_history.initialize_channel(message.channel)
 
         # Check if this message is directed at the bot
         is_dm = isinstance(message.channel, discord.DMChannel)
@@ -113,41 +114,23 @@ class DeepBot(commands.Bot):
             else:
                 logger.info(f"Ignoring invalid command: {command_name}")
 
-        # Add all messages to history, not just those directed at the bot
-        # Format the username and message content
+        # Add message to history if it's not empty
         content = message.content.strip()
-
-        # Skip empty messages
-        if not content:
-            return
-
-        # Clean up the content by replacing Discord mentions with usernames
-        content = clean_message_content(message)
-
-        # Format the message content with username
-        message_content = f"{message.author.display_name}: {content}"
-
-        # Check for duplicates and add to history if not a duplicate
-        if not self.conversation_manager.is_duplicate_message(
-            channel_id, "user", message_content
-        ):
-            self.conversation_manager.add_message(channel_id, "user", message_content)
-
-        # Trim history if needed
-        max_history = int(config.get_option("max_history", 10))
-        self.conversation_manager.trim_history(channel_id, max_history)
+        if content:
+            self.message_history.add_message(message)
 
         # Only respond to messages that mention the bot or are direct messages
         if not is_directed_at_bot:
             return
 
         try:
-            # Add message to response queue
-            if channel_id not in self.conversation_manager.response_queues:
-                self.conversation_manager.response_queues[channel_id] = asyncio.Queue()
-            await self.conversation_manager.response_queues[channel_id].put(message)
-            # Ensure there's a queue processor running
-            await self.conversation_manager.ensure_queue_processor(channel_id)
+            # Add message to response queue and start processing
+            self.llm_handler.add_to_queue(channel_id, message)
+            await self.llm_handler.ensure_queue_processor(
+                channel_id,
+                self.context_builder,
+                self.message_history.get_messages(channel_id),
+            )
             # Send acknowledgment
             await message.add_reaction("💭")
             logger.info(f"Added message to queue for channel {channel_id}")

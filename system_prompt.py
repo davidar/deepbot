@@ -55,7 +55,7 @@ def add_line(line: str) -> Tuple[List[str], List[str]]:
         save_system_prompt(lines)
 
         # Check if we need to trim
-        max_lines = int(config.get_option("max_prompt_lines", 60))
+        max_lines = config.load_model_options()["max_prompt_lines"]
         logger.info(f"Max lines allowed: {max_lines}")
         if len(lines) > max_lines:
             logger.info("Need to trim, calling trim_prompt")

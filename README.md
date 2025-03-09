@@ -2,8 +2,6 @@
 
 A Discord bot that uses a local LLM API to generate streaming responses based on conversation history.
 
-*Written by AI (Claude/Cursor), for AI (Mistral Small 3).*
-
 ## Setup
 
 1. Run the setup script to create a virtual environment and install dependencies:
@@ -49,3 +47,7 @@ The bot's behavior can be customized by modifying the following variables in `co
    - Send Messages
    - Read Message History
 8. Use the generated URL to invite the bot to your server
+
+---
+
+*Created [by AI](https://docs.cursor.com/agent) — [for AI](https://mistral.ai/en/news/mistral-small-3).*

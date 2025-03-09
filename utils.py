@@ -3,7 +3,6 @@
 import re
 from typing import Optional, Union
 
-import discord
 from discord.abc import GuildChannel, Messageable, PrivateChannel
 from discord.channel import DMChannel, TextChannel
 from discord.message import Message

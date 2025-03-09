@@ -1,8 +1,27 @@
+"""Configuration management for DeepBot."""
+
 import json
 import os
-from typing import Dict, Optional, Union, cast, overload
+from typing import TypedDict, cast
 
 from dotenv import load_dotenv
+from ollama import Message as LLMMessage
+
+
+class ModelOptions(TypedDict):
+    """Model options for LLM configuration."""
+
+    temperature: float
+    max_tokens: int
+    top_p: float
+    presence_penalty: float
+    frequency_penalty: float
+    seed: int
+    max_history: int
+    history_fetch_limit: int
+    max_response_lines: int
+    max_prompt_lines: int
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,36 +37,17 @@ MODEL_NAME = "mistral-small"
 
 
 # Load model options from JSON
-def load_model_options() -> Dict[str, Union[float, int]]:
+def load_model_options() -> ModelOptions:
     with open("model_options.json", "r") as f:
-        return cast(Dict[str, Union[float, int]], json.load(f))
+        return cast(ModelOptions, json.load(f))
 
 
-def save_model_options(options: Dict[str, Union[float, int]]) -> None:
+def save_model_options(options: ModelOptions) -> None:
     with open("model_options.json", "w") as f:
         json.dump(options, f, indent=4)
 
 
-@overload
-def get_option(name: str) -> Optional[Union[float, int]]: ...
-
-
-@overload
-def get_option(name: str, default: Union[float, int]) -> Union[float, int]: ...
-
-
-def get_option(
-    name: str, default: Optional[Union[float, int]] = None
-) -> Union[float, int, None]:
-    options = load_model_options()
-    return options.get(name, default)
-
-
-def set_option(name: str, value: Union[float, int]) -> None:
-    options = load_model_options()
-    options[name] = value
-    save_model_options(options)
-
-
 # Example conversation for initializing new channels
-EXAMPLE_CONVERSATION = json.load(open("example_conversation.json"))
+EXAMPLE_CONVERSATION: list[LLMMessage] = [
+    LLMMessage(**msg) for msg in json.load(open("example_conversation.json"))
+]

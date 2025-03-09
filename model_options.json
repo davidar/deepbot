@@ -6,7 +6,7 @@
     "frequency_penalty": 0.0,
     "seed": -1,
     "max_history": 10,
-    "history_fetch_limit": 50,
+    "history_fetch_limit": 200,
     "max_response_lines": 15,
     "max_prompt_lines": 60
 }

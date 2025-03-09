@@ -1,19 +1,19 @@
 """Command handling for DeepBot."""
 
-import asyncio
 import io
 import json
 import logging
-from typing import Optional
+from typing import Optional, get_type_hints
 
 import discord
 from discord.ext import commands
 
 import config
 import system_prompt
-from conversation import ConversationManager
+from context_builder import ContextBuilder
+from llm_streaming import LLMResponseHandler
+from message_history import MessageHistoryManager
 from reactions import ReactionManager
-from utils import get_server_name
 
 Bot = commands.Bot
 Context = commands.Context
@@ -24,14 +24,18 @@ logger = logging.getLogger("deepbot.commands")
 
 def setup_commands(
     bot: Bot,
-    conversation_manager: ConversationManager,
+    message_history: MessageHistoryManager,
+    context_builder: ContextBuilder,
+    llm_handler: LLMResponseHandler,
     reaction_manager: ReactionManager,
 ) -> None:
     """Set up bot commands.
 
     Args:
         bot: The Discord bot instance
-        conversation_manager: The conversation manager instance
+        message_history: The message history manager instance
+        context_builder: The context builder instance
+        llm_handler: The LLM response handler instance
         reaction_manager: The reaction manager instance
     """
 
@@ -61,7 +65,7 @@ def setup_commands(
 
         if action.lower() == "get" and option_name:
             # Get specific option
-            opt_value = config.get_option(option_name)
+            opt_value = config.load_model_options().get(option_name)
             if opt_value is not None:
                 await ctx.send(f"-# Option `{option_name}` is set to `{opt_value}`")
             else:
@@ -76,28 +80,37 @@ def setup_commands(
                 if float_value.is_integer():
                     float_value = int(float_value)
 
+                # Get valid options and their types directly from ModelOptions
+                option_types = get_type_hints(config.ModelOptions)
+
+                # Validate option name
+                if option_name not in option_types:
+                    raise KeyError(f"Invalid option name: {option_name}")
+
+                # Validate type
+                expected_type = option_types[option_name]
+                if not isinstance(float_value, expected_type):
+                    raise TypeError(
+                        f"Option {option_name} expects type {expected_type.__name__}, got {type(float_value).__name__}"
+                    )
+
                 # Update the option
-                config.set_option(option_name, float_value)
+                options = config.load_model_options()
+                options[option_name] = float_value  # type: ignore[literal-required]
+                config.save_model_options(options)
+
                 await ctx.send(f"-# Updated option `{option_name}` to `{float_value}`")
             except ValueError:
                 await ctx.send(f"-# Invalid value, please provide a number")
-            except KeyError:
-                await ctx.send(f"-# Invalid option name: `{option_name}`")
+            except KeyError as e:
+                await ctx.send(f"-# {str(e)}")
+            except TypeError as e:
+                await ctx.send(f"-# {str(e)}")
             return
 
         await ctx.send(
             "-# Invalid command, use `options`, `options get <option>`, or `options set <option> <value>`"
         )
-
-    @bot.command(name="reset")
-    async def reset_history(ctx: Context[Bot]) -> None:
-        """Reset the conversation history for the current channel."""
-        channel_id = ctx.channel.id
-        if conversation_manager.has_history(channel_id):
-            conversation_manager.clear_history(channel_id)
-            await ctx.send("-# Conversation history has been reset")
-        else:
-            await ctx.send("-# No conversation history to reset")
 
     @bot.command(name="refresh")
     async def refresh_history(ctx: Context[Bot]) -> None:
@@ -112,12 +125,11 @@ def setup_commands(
 
         try:
             # Clear existing history and re-initialize
-            conversation_manager.clear_history(ctx.channel.id)
-            await conversation_manager.initialize_channel_history(ctx.channel)
+            await message_history.initialize_channel(ctx.channel, refresh=True)
 
-            history_count = conversation_manager.get_history_length(ctx.channel.id)
+            history_count = message_history.get_history_length(ctx.channel.id)
             await ctx.send(
-                f"-# Conversation history refreshed! Now tracking {history_count-1} messages (plus system message)"
+                f"-# Conversation history refreshed! Now tracking {history_count} messages"
             )
         except Exception as e:
             logger.error(f"Error refreshing history: {str(e)}")
@@ -127,12 +139,25 @@ def setup_commands(
     async def raw_history(ctx: Context[Bot]) -> None:
         """Display the raw conversation history for debugging."""
         channel_id = ctx.channel.id
-        if not conversation_manager.has_history(channel_id):
+        if not message_history.has_history(channel_id):
             await ctx.send("-# No conversation history found for this channel")
             return
 
-        history = conversation_manager.get_history(channel_id)
-        json_data = json.dumps(history, indent=2)
+        # Get the raw context that would be sent to the LLM
+        messages = message_history.get_messages(channel_id)
+        context = context_builder.build_context(messages, ctx.channel)
+
+        # Convert to JSON
+        json_data = json.dumps(
+            [
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                }
+                for msg in context
+            ],
+            indent=2,
+        )
 
         # Create a discord.File object with the JSON data
         buffer = io.BytesIO(json_data.encode("utf-8"))
@@ -142,18 +167,6 @@ def setup_commands(
         )
 
         await ctx.send("-# Here's the raw conversation history:", file=file)
-
-    @bot.command(name="wipe")
-    async def wipe_memory(ctx: Context[Bot]) -> None:
-        """Temporarily wipe the bot's memory while keeping the system message."""
-        channel_id = ctx.channel.id
-        if conversation_manager.has_history(channel_id):
-            conversation_manager.reset_to_initial(ctx.channel)
-            await ctx.send(
-                "-# 🧹 Memory wiped! I'm starting fresh, but I'll keep my personality intact!"
-            )
-        else:
-            await ctx.send("-# No conversation history to wipe")
 
     @bot.command(name="prompt")
     async def prompt_command(
@@ -196,15 +209,6 @@ def setup_commands(
             message.append(f"-# Updated prompt now has {len(lines)} lines")
             await ctx.send("\n".join(message))
 
-            # Update all channels with new system prompt
-            logger.info("Updating channel prompts")
-            for channel in bot.get_all_channels():
-                if conversation_manager.has_history(channel.id):
-                    new_prompt = system_prompt.get_system_prompt(
-                        get_server_name(channel)
-                    )
-                    conversation_manager.update_system_prompt(channel.id, new_prompt)
-
         elif action.lower() == "remove" and line:
             # Remove a line
             original_lines = system_prompt.load_system_prompt()
@@ -219,17 +223,9 @@ def setup_commands(
             ]
             await ctx.send("\n".join(message))
 
-            # Update all channels with new system prompt
-            for channel in bot.get_all_channels():
-                if conversation_manager.has_history(channel.id):
-                    new_prompt = system_prompt.get_system_prompt(
-                        get_server_name(channel)
-                    )
-                    conversation_manager.update_system_prompt(channel.id, new_prompt)
-
         elif action.lower() == "trim":
             # Trim the prompt to max length
-            max_lines = int(config.get_option("max_prompt_lines", 60))
+            max_lines = config.load_model_options()["max_prompt_lines"]
             lines = system_prompt.load_system_prompt()
             if len(lines) <= max_lines:
                 await ctx.send(
@@ -243,14 +239,6 @@ def setup_commands(
                 message.append(f"-# Removed random line from system prompt: `{line}`")
             await ctx.send("\n".join(message))
 
-            # Update all channels with new system prompt
-            for channel in bot.get_all_channels():
-                if conversation_manager.has_history(channel.id):
-                    new_prompt = system_prompt.get_system_prompt(
-                        get_server_name(channel)
-                    )
-                    conversation_manager.update_system_prompt(channel.id, new_prompt)
-
         else:
             await ctx.send(
                 "-# Invalid command, use `prompt`, `prompt add <line>`, `prompt remove <line>`, or `prompt trim`"
@@ -260,22 +248,7 @@ def setup_commands(
     async def shutup_command(ctx: Context[Bot]) -> None:
         """Stop all responses in the current channel."""
         channel_id = ctx.channel.id
-
-        # Cancel the response task if it exists
-        task = conversation_manager.response_tasks.get(channel_id)
-        if task is not None and not task.done():
-            # Mark this task as shut up
-            conversation_manager.shutup_tasks.add(task)
-            task.cancel()
-            conversation_manager.response_tasks[channel_id] = None
-
-        # Clear the response queue
-        while not conversation_manager.response_queues[channel_id].empty():
-            try:
-                conversation_manager.response_queues[channel_id].get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
+        llm_handler.stop_responses(channel_id)
         await ctx.send("-# 🤫 Stopped all responses in this channel")
 
     @bot.command(name="reactions")
