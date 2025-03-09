@@ -180,7 +180,7 @@ class DeepBot(commands.Bot):
             logger.info(f"Added message to queue for channel {channel_id}")
         except Exception as e:
             logger.error(f"Error queueing response: {str(e)}")
-            await message.reply(f"Sorry, I encountered an error: {str(e)}")
+            await message.reply(f"-# Sorry, I encountered an error: {str(e)}")
 
     async def on_reaction_add(
         self, reaction: discord.Reaction, user: discord.User

@@ -279,7 +279,7 @@ class ConversationManager:
                     await self._handle_streaming_response(message, channel_id)
                 except Exception as e:
                     logger.error(f"Error processing response: {str(e)}")
-                    await message.reply(f"Sorry, I encountered an error: {str(e)}")
+                    await message.reply(f"-# Sorry, I encountered an error: {str(e)}")
                 finally:
                     # Mark the task as done
                     self.response_queues[channel_id].task_done()
@@ -371,7 +371,7 @@ class ConversationManager:
                             logger.warning(f"Failed to send message chunk: {str(e)}")
             except Exception as e:
                 logger.error(f"Error sending messages: {str(e)}")
-                await message.reply(f"Error sending messages: {str(e)}")
+                await message.reply(f"-# Error sending messages: {str(e)}")
             finally:
                 # Remove the typing reaction
                 try:

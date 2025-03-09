@@ -158,12 +158,12 @@ class ReactionManager:
                 content = content[:97] + "..."
 
             # Format reactions
-            reactions: List[str] = []
-            for r in msg_data["reactions"]:
-                reactions.append(f"{r['emoji']} x {r['count']}")
-            reactions_str = ", ".join(reactions)
+            # reactions: List[str] = []
+            # for r in msg_data["reactions"]:
+            #     reactions.append(f"{r['emoji']} x {r['count']}")
+            # reactions_str = ", ".join(reactions)
 
-            summary += f"{count} total reactions ({reactions_str}): {content}\n"
+            summary += f"{count} total reactions: {content}\n"
         return summary
 
     def initialize_bot_message(self, message: Message) -> None:

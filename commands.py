@@ -52,24 +52,20 @@ def setup_commands(
         """
         if not action:
             # Display all options
-            options = config.load_model_options()
-            options_text = "**Current Model Options:**\n\n"
-            options_text += "".join(
-                f"`{opt_name}`: {opt_value}\n"
-                for opt_name, opt_value in options.items()
+            file = discord.File("model_options.json")
+            await ctx.send("-# Current Model Options:", file=file)
+            await ctx.send(
+                "-# Use `options get <option>` or `options set <option> <value>` to modify options"
             )
-            options_text += "Use `options get <option>` to view an option.\n"
-            options_text += "Use `options set <option> <value>` to set an option.\n"
-            await ctx.send(options_text)
             return
 
         if action.lower() == "get" and option_name:
             # Get specific option
             opt_value = config.get_option(option_name)
             if opt_value is not None:
-                await ctx.send(f"`{option_name}`: {opt_value}")
+                await ctx.send(f"-# Option `{option_name}` is set to `{opt_value}`")
             else:
-                await ctx.send(f"Option `{option_name}` not found.")
+                await ctx.send(f"-# Option `{option_name}` not found")
             return
 
         if action.lower() == "set" and option_name and value is not None:
@@ -84,15 +80,15 @@ def setup_commands(
                 config.set_option(option_name, float_value)
                 # Reload options
                 config.MODEL_OPTIONS.update(config.load_model_options())
-                await ctx.send(f"Updated `{option_name}` to {float_value}")
+                await ctx.send(f"-# Updated option `{option_name}` to `{float_value}`")
             except ValueError:
-                await ctx.send(f"Invalid value. Please provide a number.")
+                await ctx.send(f"-# Invalid value, please provide a number")
             except KeyError:
-                await ctx.send(f"Invalid option name: `{option_name}`")
+                await ctx.send(f"-# Invalid option name: `{option_name}`")
             return
 
         await ctx.send(
-            "Invalid command. Use `!options`, `!options get <option>`, or `!options set <option> <value>`"
+            "-# Invalid command, use `options`, `options get <option>`, or `options set <option> <value>`"
         )
 
     @bot.command(name="reset")
@@ -101,20 +97,20 @@ def setup_commands(
         channel_id = ctx.channel.id
         if channel_id in conversation_manager.conversation_history:
             conversation_manager.conversation_history[channel_id] = []
-            await ctx.send("Conversation history has been reset.")
+            await ctx.send("-# Conversation history has been reset")
         else:
-            await ctx.send("No conversation history to reset.")
+            await ctx.send("-# No conversation history to reset")
 
     @bot.command(name="refresh")
     async def refresh_history(ctx: Context[Bot]) -> None:
         """Refresh the conversation history by fetching recent messages from the channel."""
         if not isinstance(ctx.channel, discord.TextChannel):
             await ctx.send(
-                "This command can only be used in text channels, not in DMs."
+                "-# This command can only be used in text channels, not in DMs"
             )
             return
 
-        await ctx.send("Refreshing conversation history from channel messages...")
+        await ctx.send("-# Refreshing conversation history from channel messages...")
 
         try:
             # Clear existing history
@@ -128,11 +124,11 @@ def setup_commands(
                 conversation_manager.conversation_history[ctx.channel.id]
             )
             await ctx.send(
-                f"Conversation history refreshed! Now tracking {history_count-1} messages (plus system message)."
+                f"-# Conversation history refreshed! Now tracking {history_count-1} messages (plus system message)"
             )
         except Exception as e:
             logger.error(f"Error refreshing history: {str(e)}")
-            await ctx.send(f"Error refreshing history: {str(e)}")
+            await ctx.send(f"-# Error refreshing history: {str(e)}")
 
     @bot.command(name="raw")
     async def raw_history(ctx: Context[Bot]) -> None:
@@ -142,7 +138,7 @@ def setup_commands(
             channel_id not in conversation_manager.conversation_history
             or not conversation_manager.conversation_history[channel_id]
         ):
-            await ctx.send("No conversation history found for this channel.")
+            await ctx.send("-# No conversation history found for this channel")
             return
 
         history = conversation_manager.conversation_history[channel_id]
@@ -156,50 +152,7 @@ def setup_commands(
             filename=f"conversation_history_{channel_id}.json",
         )
 
-        await ctx.send("Here's the raw conversation history:", file=file)
-
-    @bot.command(name="history")
-    async def history_command(ctx: Context[Bot]) -> None:
-        """Display the current conversation history for the channel."""
-        channel_id = ctx.channel.id
-        if (
-            channel_id not in conversation_manager.conversation_history
-            or not conversation_manager.conversation_history[channel_id]
-        ):
-            await ctx.send("No conversation history found for this channel.")
-            return
-
-        history = conversation_manager.conversation_history[channel_id]
-
-        # Format the history
-        history_text = f"**Conversation History ({len(history)} messages)**\n\n"
-
-        for i, message in enumerate(history, 1):
-            role = message["role"].capitalize()
-            content = message["content"]
-
-            # Format based on role
-            if role == "System":
-                formatted_content = f"*{content}*"
-            elif role == "User":
-                # Format user messages - content already includes username
-                formatted_content = content
-            else:
-                formatted_content = content
-
-            # Truncate long messages
-            if len(formatted_content) > 200:
-                formatted_content = formatted_content[:197] + "..."
-
-            # Add role prefix for assistant and system messages
-            if role == "Assistant":
-                history_text += f"{i}. **{role}**: {formatted_content}\n\n"
-            elif role == "System":
-                history_text += f"{i}. **{role}**: {formatted_content}\n\n"
-            else:
-                history_text += f"{i}. {formatted_content}\n\n"
-
-        await ctx.send(history_text)
+        await ctx.send("-# Here's the raw conversation history:", file=file)
 
     @bot.command(name="wipe")
     async def wipe_memory(ctx: Context[Bot]) -> None:
@@ -211,10 +164,10 @@ def setup_commands(
                 conversation_manager.get_initial_messages(ctx.channel)
             )
             await ctx.send(
-                "🧹 Memory wiped! I'm starting fresh, but I'll keep my personality intact!"
+                "-# 🧹 Memory wiped! I'm starting fresh, but I'll keep my personality intact!"
             )
         else:
-            await ctx.send("No conversation history to wipe.")
+            await ctx.send("-# No conversation history to wipe")
 
     @bot.command(name="prompt")
     async def prompt_command(
@@ -228,9 +181,9 @@ def setup_commands(
         if not action:
             # Display current prompt as a file attachment
             file = discord.File("system_prompt.txt")
-            await ctx.send("**Current System Prompt:**", file=file)
+            await ctx.send("-# Current System Prompt:", file=file)
             await ctx.send(
-                "Use `prompt add <line>` to add a line, `prompt remove <line>` to remove a line, or `prompt trim` to trim to max length."
+                "-# Use `prompt add <line>` to add a line, `prompt remove <line>` to remove a line, or `prompt trim` to trim to max length"
             )
             return
 
@@ -242,22 +195,19 @@ def setup_commands(
             logger.info(f"Current line count: {len(lines)}")
             logger.info(f"Removed lines from add operation: {removed_lines}")
 
-            await ctx.send(
-                f"Added line to system prompt: `{line}`\n\nUpdated prompt now has {len(lines)} lines."
-            )
+            await ctx.send(f"-# Added line to system prompt: `{line}`")
 
             # If any lines were removed during trimming, show them
             if removed_lines:
                 logger.info(f"Displaying {len(removed_lines)} removed lines to user")
-                max_lines = int(config.get_option("max_prompt_lines", 60))
-                removed_lines_msg = (
-                    f"**Trimmed prompt to {max_lines} lines. Removed lines:**\n"
-                    + "\n".join(f"- {line}" for line in removed_lines)
-                )
-                logger.info(f"Removed lines message: {removed_lines_msg}")
-                await ctx.send(removed_lines_msg)
+                for line in removed_lines:
+                    await ctx.send(
+                        f"-# Removed random line from system prompt: `{line}`"
+                    )
             else:
                 logger.info("No lines were removed during add operation")
+
+            await ctx.send(f"-# Updated prompt now has {len(lines)} lines")
 
             # Update all channels with new system prompt
             logger.info("Updating channel prompts")
@@ -273,13 +223,12 @@ def setup_commands(
             # Remove a line
             original_lines = system_prompt.load_system_prompt()
             if line not in original_lines:
-                await ctx.send(f"Line not found in system prompt: `{line}`")
+                await ctx.send(f"-# Line not found in system prompt: `{line}`")
                 return
 
             lines = system_prompt.remove_line(line)
-            await ctx.send(
-                f"Removed line from system prompt: `{line}`\n\nUpdated prompt now has {len(lines)} lines."
-            )
+            await ctx.send(f"-# Removed line from system prompt: `{line}`")
+            await ctx.send(f"-# Updated prompt now has {len(lines)} lines")
             # Update all channels with new system prompt
             for channel_id in conversation_manager.conversation_history:
                 if conversation_manager.conversation_history[channel_id]:
@@ -294,14 +243,15 @@ def setup_commands(
             max_lines = int(config.get_option("max_prompt_lines", 60))
             lines = system_prompt.load_system_prompt()
             if len(lines) <= max_lines:
-                await ctx.send(f"Prompt is already within limit ({len(lines)} lines).")
+                await ctx.send(
+                    f"-# Prompt is already within limit ({len(lines)} lines)"
+                )
                 return
 
             lines, removed_lines = system_prompt.trim_prompt(max_lines)
-            await ctx.send(
-                f"**Trimmed prompt to {max_lines} lines. Removed lines:**\n"
-                + "\n".join(f"- {line}" for line in removed_lines)
-            )
+            for line in removed_lines:
+                await ctx.send(f"-# Removed random line from system prompt: `{line}`")
+            await ctx.send(f"-# Trimmed prompt to {len(lines)} lines")
 
             # Update all channels with new system prompt
             for channel_id in conversation_manager.conversation_history:
@@ -314,7 +264,7 @@ def setup_commands(
 
         else:
             await ctx.send(
-                "Invalid command. Use `prompt` to view, `prompt add <line>` to add, `prompt remove <line>` to remove, or `prompt trim` to trim to max length."
+                "-# Invalid command, use `prompt`, `prompt add <line>`, `prompt remove <line>`, or `prompt trim`"
             )
 
     @bot.command(name="shutup")
@@ -337,7 +287,7 @@ def setup_commands(
             except asyncio.QueueEmpty:
                 break
 
-        await ctx.send("🤫 Stopped all responses in this channel.")
+        await ctx.send("-# 🤫 Stopped all responses in this channel")
 
     @bot.command(name="reactions")
     async def reactions_command(ctx: Context[Bot]) -> None:
@@ -346,16 +296,19 @@ def setup_commands(
         message_reactions = reaction_manager.get_channel_stats(channel_id)
 
         if not message_reactions:
-            await ctx.send("No reaction data available for this channel yet.")
+            await ctx.send("-# No reaction data available for this channel yet")
             return
 
         # Create a summary of reactions
         channel_name = (
             ctx.channel.name if isinstance(ctx.channel, discord.TextChannel) else "DM"
         )
-        summary = f"**Reaction Statistics for #{channel_name}**\n\n"
-        summary += reaction_manager.format_reaction_summary(message_reactions)
-        await ctx.send(summary)
+        message = [f"-# Reaction statistics for #{channel_name}"]
+        summary = reaction_manager.format_reaction_summary(message_reactions)
+        for line in summary.split("\n"):
+            if line.strip():
+                message.append(f"-# {line}")
+        await ctx.send("\n".join(message))
 
     # Add custom command error handler
     @bot.event
@@ -365,9 +318,9 @@ def setup_commands(
             # This is handled in on_message, so we can ignore it here
             pass
         elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(f"Error: Missing required argument: {error.param}")
+            await ctx.send(f"-# Error: Missing required argument: {error.param}")
         elif isinstance(error, commands.BadArgument):
-            await ctx.send(f"Error: Bad argument: {error}")
+            await ctx.send(f"-# Error: Bad argument: {error}")
         else:
             logger.error(f"Command error: {error}")
-            await ctx.send(f"Error executing command: {error}")
+            await ctx.send(f"-# Error executing command: {error}")
