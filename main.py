@@ -266,6 +266,64 @@ class DeepBot(commands.Bot):
     def add_commands(self) -> None:
         """Add bot commands."""
 
+        @self.command(name="options")
+        async def options_command(
+            ctx: Context[Bot],
+            action: Optional[str] = None,
+            option_name: Optional[str] = None,
+            *,  # Force remaining args to be keyword-only
+            value: Optional[Union[float, int, str]] = None,
+        ) -> None:
+            """View or modify model options.
+
+            Usage:
+            !options - View all options
+            !options get <option> - View specific option
+            !options set <option> <value> - Set option value
+            """
+            if not action:
+                # Display all options
+                options = config.load_model_options()
+                options_text = "**Current Model Options:**\n\n"
+                for opt_name, opt_value in options.items():
+                    options_text += f"`{opt_name}`: {opt_value}\n"
+                options_text += "Use `options get <option>` to view an option.\n"
+                options_text += "Use `options set <option> <value>` to set an option.\n"
+                await ctx.send(options_text)
+                return
+
+            if action.lower() == "get" and option_name:
+                # Get specific option
+                opt_value = config.get_option(option_name)
+                if opt_value is not None:
+                    await ctx.send(f"`{option_name}`: {opt_value}")
+                else:
+                    await ctx.send(f"Option `{option_name}` not found.")
+                return
+
+            if action.lower() == "set" and option_name and value is not None:
+                try:
+                    # Try to convert value to float first
+                    float_value = float(value)
+                    # If it's a whole number, convert to int
+                    if float_value.is_integer():
+                        float_value = int(float_value)
+
+                    # Update the option
+                    config.set_option(option_name, float_value)
+                    # Reload options
+                    config.MODEL_OPTIONS.update(config.load_model_options())
+                    await ctx.send(f"Updated `{option_name}` to {float_value}")
+                except ValueError:
+                    await ctx.send(f"Invalid value. Please provide a number.")
+                except KeyError:
+                    await ctx.send(f"Invalid option name: `{option_name}`")
+                return
+
+            await ctx.send(
+                "Invalid command. Use `!options`, `!options get <option>`, or `!options set <option> <value>`"
+            )
+
         @self.command(name="reset")
         async def reset_history(ctx: Context[Bot]) -> None:
             """Reset the conversation history for the current channel."""
@@ -326,27 +384,6 @@ class DeepBot(commands.Bot):
             )
 
             await ctx.send("Here's the raw conversation history:", file=file)
-
-        @self.command(name="info")
-        async def info_command(ctx: Context[Bot]) -> None:
-            """Display information about the bot configuration."""
-            backend_type = "Ollama"
-
-            info_text = (
-                f"**DeepBot Configuration**\n\n"
-                f"Backend: `{backend_type}`\n"
-                f"API URL: `{config.API_URL}`\n"
-                f"Model: `{config.MODEL_NAME}`\n"
-                f"Max History: `{config.MAX_HISTORY}`\n"
-                f"History Fetch Limit: `{config.HISTORY_FETCH_LIMIT}`\n"
-                f"Temperature: `{config.TEMPERATURE}`\n"
-                f"Max Tokens: `{config.MAX_TOKENS}`\n"
-                f"Top P: `{config.TOP_P}`\n"
-                f"Presence Penalty: `{config.PRESENCE_PENALTY}`\n"
-                f"Frequency Penalty: `{config.FREQUENCY_PENALTY}`\n"
-                f"Seed: `{config.SEED if config.SEED != -1 else 'None'}`\n"
-            )
-            await ctx.send(info_text)
 
         @self.command(name="history")
         async def history_command(ctx: Context[Bot]) -> None:
@@ -516,11 +553,6 @@ class DeepBot(commands.Bot):
 
         await self.change_presence(activity=discord.Game(name=f"with myself"))
 
-        # Initialize history for all channels the bot can see
-        logger.info(
-            f"Starting to initialize history for all channels (fetch limit: {config.HISTORY_FETCH_LIMIT})"
-        )
-
         for guild in self.guilds:
             logger.info(f"Connected to {guild.name}")
 
@@ -544,7 +576,7 @@ class DeepBot(commands.Bot):
 
         try:
             # Fetch recent messages from the channel
-            message_limit = config.HISTORY_FETCH_LIMIT
+            message_limit = int(config.get_option("history_fetch_limit", 50))
             all_messages: List[Dict[str, Any]] = []
 
             logger.info(
@@ -650,10 +682,11 @@ class DeepBot(commands.Bot):
 
             # Trim if needed
             # +1 for system message
-            if len(self.conversation_history[channel_id]) > config.MAX_HISTORY + 1:
+            max_history = int(config.get_option("max_history", 10))
+            if len(self.conversation_history[channel_id]) > max_history + 1:
                 self.conversation_history[channel_id] = [
-                    self.conversation_history[channel_id][0]  # Keep system message
-                ] + self.conversation_history[channel_id][-(config.MAX_HISTORY) :]
+                    self.conversation_history[channel_id][0]
+                ] + self.conversation_history[channel_id][-max_history:]
 
             # Save reaction data after initializing history
             self._save_reaction_data()
@@ -772,16 +805,17 @@ class DeepBot(commands.Bot):
             )
 
         # Trim history if it exceeds the maximum length
-        if len(self.conversation_history[channel_id]) > config.MAX_HISTORY:
+        max_history = int(config.get_option("max_history", 10))
+        if len(self.conversation_history[channel_id]) > max_history:
             # Keep the system message if it exists
             if self.conversation_history[channel_id][0]["role"] == "system":
                 self.conversation_history[channel_id] = [
                     self.conversation_history[channel_id][0]
-                ] + self.conversation_history[channel_id][-(config.MAX_HISTORY - 1) :]
+                ] + self.conversation_history[channel_id][-(max_history - 1) :]
             else:
                 self.conversation_history[channel_id] = self.conversation_history[
                     channel_id
-                ][-config.MAX_HISTORY :]
+                ][-max_history:]
 
         # Only respond to messages that mention the bot or are direct messages
         if not is_directed_at_bot:
@@ -869,13 +903,7 @@ class DeepBot(commands.Bot):
                 messages=self.conversation_history[channel_id],
                 stream=True,
                 keep_alive=-1,
-                options={
-                    "temperature": float(config.TEMPERATURE),
-                    "top_p": float(config.TOP_P),
-                    "presence_penalty": float(config.PRESENCE_PENALTY),
-                    "frequency_penalty": float(config.FREQUENCY_PENALTY),
-                    "seed": int(config.SEED) if config.SEED != -1 else None,
-                },
+                options=config.MODEL_OPTIONS,
             )
 
             # Variables to track streaming state
@@ -988,7 +1016,8 @@ class DeepBot(commands.Bot):
                                 await message.channel.send(line)
                             line_count += 1
 
-                            if line_count > 9:
+                            max_lines = int(config.get_option("max_response_lines", 10))
+                            if line_count >= max_lines:
                                 logger.info(
                                     "Reached maximum line limit, stopping response"
                                 )
