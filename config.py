@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Dict, Optional, Union, overload
+from typing import Dict, Optional, Union, cast, overload
 
 from dotenv import load_dotenv
 
@@ -19,24 +19,8 @@ MODEL_NAME = "mistral-small"
 
 # Load model options from JSON
 def load_model_options() -> Dict[str, Union[float, int]]:
-    try:
-        with open("model_options.json", "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        # Default values if file doesn't exist
-        defaults = {
-            "temperature": 0.7,
-            "max_tokens": -1,
-            "top_p": 0.9,
-            "presence_penalty": 0.0,
-            "frequency_penalty": 0.0,
-            "seed": -1,
-            "max_history": 10,
-            "history_fetch_limit": 50,
-            "max_response_lines": 10,
-        }
-        save_model_options(defaults)
-        return defaults
+    with open("model_options.json", "r") as f:
+        return cast(Dict[str, Union[float, int]], json.load(f))
 
 
 def save_model_options(options: Dict[str, Union[float, int]]) -> None:

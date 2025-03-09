@@ -18,7 +18,7 @@ A Discord bot that uses a local LLM API to generate streaming responses based on
 
 3. Run the bot:
    ```
-   python main.py
+   python bot.py
    ```
 
 ## Configuration

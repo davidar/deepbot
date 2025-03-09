@@ -129,7 +129,7 @@ def main() -> None:
     else:
         print("   - Run: source activate.sh")
     print("3. Make sure LM Studio is running with the API enabled")
-    print("4. Run the bot with: python main.py")
+    print("4. Run the bot with: python bot.py")
 
 
 if __name__ == "__main__":
