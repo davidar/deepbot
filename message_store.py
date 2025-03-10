@@ -5,7 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, TypeVar, cast
 
 from discord import Guild, Member, Message
 from discord import Role as DiscordRole
@@ -14,10 +14,90 @@ from discord.abc import GuildChannel
 from discord.emoji import Emoji
 from discord.partial_emoji import PartialEmoji
 
+from utils import get_channel_name
+
+if TYPE_CHECKING:
+    from discord.abc import MessageableChannel
+
 # Set up logging
 logger = logging.getLogger("deepbot.message_store")
 
 T = TypeVar("T")
+
+
+@dataclass
+class TimeRange:
+    """Represents a range of time with start and end points."""
+
+    start: datetime
+    end: datetime
+
+    def overlaps(self, other: "TimeRange") -> bool:
+        """Check if this range overlaps with another range."""
+        return self.start <= other.end and other.start <= self.end
+
+    def merge(self, other: "TimeRange") -> "TimeRange":
+        """Merge this range with another overlapping range."""
+        if not self.overlaps(other):
+            raise ValueError("Ranges must overlap to merge")
+        return TimeRange(
+            start=min(self.start, other.start), end=max(self.end, other.end)
+        )
+
+
+@dataclass
+class ChannelMetadata:
+    """Metadata for a channel including known ranges and gaps."""
+
+    channel_id: str
+    known_ranges: List[TimeRange]
+    gaps: List[TimeRange]
+    last_sync: datetime
+
+    def add_known_range(self, new_range: TimeRange) -> None:
+        """Add a new known range, merging with existing ranges if they overlap."""
+        # Find overlapping ranges
+        overlapping = [r for r in self.known_ranges if r.overlaps(new_range)]
+
+        if not overlapping:
+            # No overlaps, just add the new range
+            self.known_ranges.append(new_range)
+        else:
+            # Merge with overlapping ranges
+            merged = new_range
+            for r in overlapping:
+                merged = merged.merge(r)
+                self.known_ranges.remove(r)
+            self.known_ranges.append(merged)
+
+        # Sort ranges by start time
+        self.known_ranges.sort(key=lambda r: r.start)
+
+        # Update gaps
+        self._update_gaps()
+
+    def _update_gaps(self) -> None:
+        """Update the gaps list based on known ranges."""
+        if not self.known_ranges:
+            return
+
+        # Sort ranges by start time
+        sorted_ranges = sorted(self.known_ranges, key=lambda r: r.start)
+
+        # Find gaps between ranges
+        self.gaps = []
+        for i in range(len(sorted_ranges) - 1):
+            current = sorted_ranges[i]
+            next_range = sorted_ranges[i + 1]
+
+            if (next_range.start - current.end) > timedelta(seconds=1):
+                self.gaps.append(TimeRange(start=current.end, end=next_range.start))
+
+    def get_recent_gaps(self, time_window: timedelta) -> List[TimeRange]:
+        """Get gaps that overlap with the recent time window."""
+        now = datetime.now(timezone.utc)
+        recent_window = TimeRange(start=now - time_window, end=now)
+        return [gap for gap in self.gaps if gap.overlaps(recent_window)]
 
 
 @dataclass
@@ -435,17 +515,85 @@ class MessageStore:
         self._channel_info: Dict[str, ChannelInfo] = {}
         self._guild_info: Optional[GuildInfo] = None
         self._channel_last_sync: Dict[str, datetime] = {}
+        self._channel_metadata: Dict[str, ChannelMetadata] = {}
         self._load_data()
 
     def _get_channel_file(self, channel_id: str) -> str:
         """Get the file path for a channel's messages."""
         return os.path.join(self.storage_dir, f"{channel_id}.json")
 
+    def _get_metadata_file(self, channel_id: str) -> str:
+        """Get the file path for a channel's metadata."""
+        return os.path.join(self.storage_dir, f"{channel_id}_metadata.json")
+
+    def _load_metadata(self, channel_id: str) -> None:
+        """Load metadata for a channel."""
+        try:
+            file_path = self._get_metadata_file(channel_id)
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # Convert string timestamps back to datetime
+                    known_ranges = [
+                        TimeRange(
+                            start=datetime.fromisoformat(r["start"]),
+                            end=datetime.fromisoformat(r["end"]),
+                        )
+                        for r in data["known_ranges"]
+                    ]
+                    gaps = [
+                        TimeRange(
+                            start=datetime.fromisoformat(r["start"]),
+                            end=datetime.fromisoformat(r["end"]),
+                        )
+                        for r in data["gaps"]
+                    ]
+                    self._channel_metadata[channel_id] = ChannelMetadata(
+                        channel_id=channel_id,
+                        known_ranges=known_ranges,
+                        gaps=gaps,
+                        last_sync=datetime.fromisoformat(data["last_sync"]),
+                    )
+        except Exception as e:
+            logger.error(f"Error loading metadata for channel {channel_id}: {str(e)}")
+            self._channel_metadata[channel_id] = ChannelMetadata(
+                channel_id=channel_id,
+                known_ranges=[],
+                gaps=[],
+                last_sync=datetime.now(timezone.utc),
+            )
+
+    def _save_metadata(self, channel_id: str) -> None:
+        """Save metadata for a channel."""
+        try:
+            metadata = self._channel_metadata.get(channel_id)
+            if not metadata:
+                return
+
+            file_path = self._get_metadata_file(channel_id)
+            data = {
+                "known_ranges": [
+                    {"start": r.start.isoformat(), "end": r.end.isoformat()}
+                    for r in metadata.known_ranges
+                ],
+                "gaps": [
+                    {"start": r.start.isoformat(), "end": r.end.isoformat()}
+                    for r in metadata.gaps
+                ],
+                "last_sync": metadata.last_sync.isoformat(),
+            }
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving metadata for channel {channel_id}: {str(e)}")
+
     def _load_data(self) -> None:
         """Load message data from storage directory."""
         try:
             for filename in os.listdir(self.storage_dir):
-                if filename.endswith(".json"):
+                if filename.endswith(".json") and not filename.endswith(
+                    "_metadata.json"
+                ):
                     channel_id = filename[:-5]  # Remove .json
                     file_path = os.path.join(self.storage_dir, filename)
                     with open(file_path, "r", encoding="utf-8") as f:
@@ -469,6 +617,9 @@ class MessageStore:
                             author_roles = [
                                 Role(**r) for r in author_data.pop("roles", [])
                             ]
+                            # Ensure nickname field exists
+                            if "nickname" not in author_data:
+                                author_data["nickname"] = None
                             author = UserInfo(**author_data, roles=author_roles)
 
                             mentions_data = msg_data.pop("mentions", [])
@@ -477,6 +628,9 @@ class MessageStore:
                                 mention_roles = [
                                     Role(**r) for r in mention.pop("roles", [])
                                 ]
+                                # Ensure nickname field exists for mentions
+                                if "nickname" not in mention:
+                                    mention["nickname"] = None
                                 mentions.append(
                                     UserInfo(**mention, roles=mention_roles)
                                 )
@@ -507,6 +661,8 @@ class MessageStore:
                             messages[stored_msg.id] = stored_msg
 
                         self._channel_messages[channel_id] = messages
+                        # Load metadata for this channel
+                        self._load_metadata(channel_id)
 
             logger.info(f"Loaded messages from {len(self._channel_messages)} channels")
         except Exception as e:
@@ -543,6 +699,9 @@ class MessageStore:
             with open(file_path, "w") as f:
                 json.dump(data, f, indent=2)
             logger.info(f"Saved message data for channel {channel_id}")
+
+            # Save metadata after saving messages
+            self._save_metadata(channel_id)
         except Exception as e:
             logger.error(
                 f"Error saving message data for channel {channel_id}: {str(e)}"
@@ -620,43 +779,80 @@ class MessageStore:
             return messages[-limit:]
         return messages
 
-    async def initialize_channel(
-        self, channel: TextChannel, refresh: bool = False
-    ) -> None:
+    async def initialize_channel(self, channel: "MessageableChannel") -> None:
         """Initialize message history for a channel by fetching recent messages.
+
+        This method will:
+        1. Check for gaps in recent history
+        2. Fetch messages to fill any gaps
+        3. Update metadata about known ranges
 
         Args:
             channel: The Discord channel to initialize history for
-            refresh: Whether to refresh existing history
         """
         channel_id = str(channel.id)
-
-        # Skip if history exists and refresh not requested
-        if channel_id in self._channel_messages and not refresh:
-            return
+        channel_name = get_channel_name(channel)
 
         try:
-            # Clear existing messages if refreshing
-            if refresh:
-                self._channel_messages[channel_id] = {}
+            # Ensure we have metadata for this channel
+            if channel_id not in self._channel_metadata:
+                self._load_metadata(channel_id)
 
-            logger.info(f"Fetching messages from channel {channel.name}")
+            metadata = self._channel_metadata[channel_id]
+            now = datetime.now(timezone.utc)
 
-            # Use the Discord API to fetch recent messages
-            async for message in channel.history():
-                await self.add_message(message)
+            # Check for gaps in the last 24 hours
+            recent_window = timedelta(hours=24)
+            recent_gaps = metadata.get_recent_gaps(recent_window)
 
-            channel_dict = self._channel_messages.get(channel_id, {})
-            logger.info(
-                f"Initialized history for channel {channel.name} "
-                f"with {len(channel_dict)} messages"
-            )
+            if recent_gaps:
+                logger.info(
+                    f"Found {len(recent_gaps)} gaps in recent history for channel {channel_name}"
+                )
+
+                # Fetch messages to fill the gaps
+                message_count = 0
+                for gap in recent_gaps:
+                    logger.info(
+                        f"Fetching messages from {gap.start.isoformat()} to {gap.end.isoformat()}"
+                    )
+                    async for message in channel.history(
+                        after=gap.start, before=gap.end, limit=None
+                    ):
+                        await self.add_message(message)
+                        message_count += 1
+                    # Update known range for the gap we just filled
+                    metadata.add_known_range(TimeRange(start=gap.start, end=gap.end))
+
+                if message_count > 0:
+                    logger.info(f"Filled gaps with {message_count} messages")
+            else:
+                # No gaps, but we should still check if we need to sync recent messages
+                latest_time = self._get_latest_message_time(channel_id)
+                if latest_time:
+                    time_since_last = now - latest_time
+                    if time_since_last > timedelta(
+                        minutes=5
+                    ):  # If we're more than 5 minutes behind
+                        logger.info(
+                            f"Syncing recent messages for channel {channel_name}"
+                        )
+                        await self.sync_channel(channel, overlap_minutes=5)
+                else:
+                    # No messages at all, do an initial sync
+                    logger.info(
+                        f"No messages found for channel {channel_name}, doing initial sync"
+                    )
+                    await self.sync_channel(channel)
+
+            # Save changes
+            self._save_channel_data(channel_id)
 
         except Exception as e:
             logger.error(
-                f"Error initializing history for channel {channel.name}: {str(e)}"
+                f"Error initializing history for channel {channel_name}: {str(e)}"
             )
-            self._channel_messages[channel_id] = {}
+            raise  # Re-raise for error handling
 
     def save_all_channels(self) -> None:
         """Save all channel data to disk. For testing purposes."""
@@ -690,7 +886,7 @@ class MessageStore:
         return latest_time
 
     async def sync_channel(
-        self, channel: TextChannel, overlap_minutes: int = 180
+        self, channel: "MessageableChannel", overlap_minutes: int = 180
     ) -> None:
         """Synchronize messages for a channel since the last sync.
 
@@ -698,16 +894,25 @@ class MessageStore:
         1. Find messages newer than the most recent stored message
         2. Update metadata (like reactions) for recent messages
         3. Add new messages to storage
+        4. Track gaps in message history
 
         Args:
             channel: The Discord channel to sync
             overlap_minutes: Number of minutes to overlap with existing messages for updating metadata
         """
         channel_id = str(channel.id)
+        channel_name = get_channel_name(channel)
         latest_time = self._get_latest_message_time(channel_id)
 
         try:
-            logger.info(f"Syncing messages from channel {channel.name}")
+            logger.info(f"Syncing messages from channel {channel_name}")
+
+            # Ensure we have metadata for this channel
+            if channel_id not in self._channel_metadata:
+                self._load_metadata(channel_id)
+
+            metadata = self._channel_metadata[channel_id]
+            now = datetime.now(timezone.utc)
 
             if latest_time:
                 # Add overlap period to catch any edits/reactions on recent messages
@@ -756,6 +961,9 @@ class MessageStore:
                         )
                         last_log_time = now
 
+                # Update known range for this sync
+                metadata.add_known_range(TimeRange(start=sync_after, end=now))
+
                 logger.info(
                     f"Sync complete: processed {message_count} messages total "
                     f"({new_messages} new, {updated_messages} updated)"
@@ -779,21 +987,75 @@ class MessageStore:
                         )
                         last_log_time = now
 
+                # Update known range for initial sync
+                if message_count > 0:
+                    first_msg = min(
+                        (msg for msg in self._channel_messages[channel_id].values()),
+                        key=lambda m: datetime.fromisoformat(
+                            m.timestamp.replace("Z", "+00:00")
+                        ),
+                    )
+                    last_msg = max(
+                        (msg for msg in self._channel_messages[channel_id].values()),
+                        key=lambda m: datetime.fromisoformat(
+                            m.timestamp.replace("Z", "+00:00")
+                        ),
+                    )
+                    metadata.add_known_range(
+                        TimeRange(
+                            start=datetime.fromisoformat(
+                                first_msg.timestamp.replace("Z", "+00:00")
+                            ),
+                            end=datetime.fromisoformat(
+                                last_msg.timestamp.replace("Z", "+00:00")
+                            ),
+                        )
+                    )
+
                 logger.info(
                     f"Initial sync complete: downloaded {message_count} messages"
                 )
 
             # Update last sync time
-            self._channel_last_sync[channel_id] = datetime.now(timezone.utc)
+            metadata.last_sync = now
+            self._channel_last_sync[channel_id] = now
 
             # Save changes
             self._save_channel_data(channel_id)
 
             channel_dict = self._channel_messages.get(channel_id, {})
             logger.info(
-                f"Channel {channel.name} now has {len(channel_dict)} total messages stored"
+                f"Channel {channel_name} now has {len(channel_dict)} total messages stored"
             )
 
         except Exception as e:
-            logger.error(f"Error syncing channel {channel.name}: {str(e)}")
+            logger.error(f"Error syncing channel {channel_name}: {str(e)}")
             raise  # Re-raise for error handling
+
+    def get_recent_gaps(
+        self, channel_id: str, time_window: timedelta
+    ) -> List[TimeRange]:
+        """Get gaps in recent message history for a channel.
+
+        Args:
+            channel_id: The Discord channel ID
+            time_window: How far back to look for gaps
+
+        Returns:
+            List of time ranges where we're missing messages
+        """
+        metadata = self._channel_metadata.get(channel_id)
+        if not metadata:
+            return []
+        return metadata.get_recent_gaps(time_window)
+
+    def get_channel_metadata(self, channel_id: str) -> Optional[ChannelMetadata]:
+        """Get metadata for a channel.
+
+        Args:
+            channel_id: The Discord channel ID
+
+        Returns:
+            Channel metadata if it exists, None otherwise
+        """
+        return self._channel_metadata.get(channel_id)
