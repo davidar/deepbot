@@ -23,6 +23,15 @@ A Discord bot that uses a local LLM API to generate streaming responses based on
 
 On Linux systems, the setup script automatically configures a systemd user service. Here's how to manage it:
 
+### Enable Service to Run Without Login
+```bash
+# Enable lingering for your user to allow the service to run without being logged in
+sudo loginctl enable-linger $USER
+
+# Verify lingering is enabled
+loginctl show-user $USER | grep Linger
+```
+
 ### Basic Service Commands
 ```bash
 # Enable the service to start on boot
