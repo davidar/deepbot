@@ -70,7 +70,7 @@ class MessageHistoryManager:
 
     async def initialize_channel(
         self, channel: "MessageableChannel", refresh: bool = False
-    ) -> None:
+    ) -> bool:
         """Initialize message history for a channel by fetching recent messages.
 
         Args:
@@ -80,7 +80,7 @@ class MessageHistoryManager:
 
         # Skip if history already exists for this channel
         if self.has_history(channel_id) and not refresh:
-            return
+            return False
 
         try:
             # Fetch recent messages from the channel
@@ -101,9 +101,11 @@ class MessageHistoryManager:
             logger.info(
                 f"Initialized history for channel {get_channel_name(channel)} with {len(self._message_history[channel_id])} messages"
             )
+            return True
 
         except Exception as e:
             logger.error(
                 f"Error initializing history for channel {get_channel_name(channel)}: {str(e)}"
             )
             self._message_history[channel_id] = []
+            return False

@@ -3,12 +3,13 @@
 import io
 import json
 import logging
-from typing import Optional, get_type_hints
+from typing import Literal, Optional, cast, get_type_hints
 
 import discord
 from discord.ext import commands
 
 import config
+import example_conversation
 import system_prompt
 from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
@@ -243,6 +244,127 @@ def setup_commands(
             await ctx.send(
                 "-# Invalid command, use `prompt`, `prompt add <line>`, `prompt remove <line>`, or `prompt trim`"
             )
+
+    @bot.command(name="example")
+    async def example_command(
+        ctx: Context[Bot],
+        action: Optional[str] = None,
+        *,
+        content: Optional[str] = None,
+    ) -> None:
+        """Manage the example conversation.
+
+        Usage:
+        !example - View current example conversation
+        !example add <role> <content> - Add a new message
+        !example remove <index> - Remove a message by index
+        !example edit <index> [role] [content] - Edit a message
+        """
+        if not action:
+            # Display current example conversation as a file attachment
+            file = discord.File("example_conversation.json")
+            await ctx.send("-# Current Example Conversation:", file=file)
+            await ctx.send(
+                "-# Use `example add <role> <content>`, `example remove <index>`, or `example edit <index> [role] [content]` to modify"
+            )
+            return
+
+        if action.lower() == "add" and content:
+            try:
+                # Split content into role and message content
+                role_str, *content_parts = content.split(maxsplit=1)
+                if not content_parts:
+                    await ctx.send("-# Please provide both role and content")
+                    return
+                message_content = content_parts[0]
+
+                # Validate role
+                if role_str not in ["user", "assistant", "system", "tool"]:
+                    await ctx.send(
+                        "-# Role must be one of: user, assistant, system, tool"
+                    )
+                    return
+
+                messages = example_conversation.add_message(
+                    cast(Literal["user", "assistant", "system", "tool"], role_str),
+                    message_content,
+                )
+                await ctx.send(
+                    f"-# Added new message to example conversation. Total messages: {len(messages)}"
+                )
+                return
+
+            except Exception as e:
+                logger.error(f"Error adding example message: {e}")
+                await ctx.send(f"-# Error adding message: {str(e)}")
+                return
+
+        if action.lower() == "remove" and content:
+            try:
+                index = int(content)
+                messages, removed = example_conversation.remove_message(index)
+                if removed:
+                    await ctx.send(
+                        f"-# Removed message at index {index}. Total messages: {len(messages)}"
+                    )
+                else:
+                    await ctx.send(f"-# No message found at index {index}")
+                return
+
+            except ValueError:
+                await ctx.send("-# Please provide a valid index number")
+                return
+            except Exception as e:
+                logger.error(f"Error removing example message: {e}")
+                await ctx.send(f"-# Error removing message: {str(e)}")
+                return
+
+        if action.lower() == "edit" and content:
+            try:
+                # Split content into index and optional role/content
+                parts = content.split(maxsplit=2)
+                if len(parts) < 1:
+                    await ctx.send("-# Please provide an index")
+                    return
+
+                index = int(parts[0])
+                role: Optional[Literal["user", "assistant", "system", "tool"]] = None
+                message_content = None
+
+                if len(parts) > 1:
+                    role_str = parts[1]
+                    if role_str not in ["user", "assistant", "system", "tool"]:
+                        await ctx.send(
+                            "-# Role must be one of: user, assistant, system, tool"
+                        )
+                        return
+                    role = cast(
+                        Literal["user", "assistant", "system", "tool"], role_str
+                    )
+
+                if len(parts) > 2:
+                    message_content = parts[2]
+
+                messages, edited = example_conversation.edit_message(
+                    index, role, message_content
+                )
+                if edited:
+                    await ctx.send(f"-# Edited message at index {index}")
+                else:
+                    await ctx.send(f"-# No message found at index {index}")
+                return
+
+            except ValueError:
+                await ctx.send("-# Please provide a valid index number")
+                return
+            except Exception as e:
+                logger.error(f"Error editing example message: {e}")
+                await ctx.send(f"-# Error editing message: {str(e)}")
+                return
+
+        await ctx.send(
+            "-# Invalid command, use `example`, `example add <role> <content>`, `example remove <index>`, or `example edit <index> [role] [content]`"
+        )
 
     @bot.command(name="shutup")
     async def shutup_command(ctx: Context[Bot]) -> None:

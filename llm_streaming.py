@@ -208,7 +208,7 @@ class LLMResponseHandler:
 
                 # Build context for LLM
                 context = context_builder.build_context(
-                    message_history, message.channel
+                    message_history, message.channel, message
                 )
 
                 first_message = True
@@ -263,12 +263,16 @@ class LLMResponseHandler:
                 # Remove this task from the shutup set
                 self.shutup_tasks.discard(current_task)
 
-    def add_to_queue(self, channel_id: int, message: Message) -> None:
+    def add_to_queue(
+        self,
+        channel_id: int,
+        message: Message,
+    ) -> None:
         """Add a message to the response queue.
 
         Args:
             channel_id: The Discord channel ID
-            message: The Discord message to respond to
+            message: The message to respond to
         """
         if channel_id not in self.response_queues:
             self.response_queues[channel_id] = asyncio.Queue()

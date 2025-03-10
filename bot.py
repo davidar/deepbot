@@ -12,6 +12,7 @@ from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
 from message_history import MessageHistoryManager
 from reactions import ReactionManager
+from utils import get_channel_name
 
 # Set up logging
 logging.basicConfig(
@@ -60,6 +61,9 @@ class DeepBot(commands.Bot):
             self.reaction_manager,
         )
 
+        # Update context builder with command names after commands are set up
+        self.context_builder.set_bot(self)
+
         logger.info("Bot components initialized")
 
     async def on_ready(self) -> None:
@@ -90,7 +94,12 @@ class DeepBot(commands.Bot):
         channel_id = message.channel.id
 
         # Get or initialize message history for this channel
-        await self.message_history.initialize_channel(message.channel)
+        if await self.message_history.initialize_channel(message.channel):
+            logger.info(
+                f"Initialized history for channel {get_channel_name(message.channel)}"
+            )
+        elif message.content.strip():
+            self.message_history.add_message(message)
 
         # Check if this message is directed at the bot
         is_dm = isinstance(message.channel, discord.DMChannel)
@@ -113,11 +122,6 @@ class DeepBot(commands.Bot):
                 return
             else:
                 logger.info(f"Ignoring invalid command: {command_name}")
-
-        # Add message to history if it's not empty
-        content = message.content.strip()
-        if content:
-            self.message_history.add_message(message)
 
         # Only respond to messages that mention the bot or are direct messages
         if not is_directed_at_bot:

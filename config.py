@@ -5,7 +5,6 @@ import os
 from typing import TypedDict, cast
 
 from dotenv import load_dotenv
-from ollama import Message as LLMMessage
 
 
 class ModelOptions(TypedDict):
@@ -45,9 +44,3 @@ def load_model_options() -> ModelOptions:
 def save_model_options(options: ModelOptions) -> None:
     with open("model_options.json", "w") as f:
         json.dump(options, f, indent=4)
-
-
-# Example conversation for initializing new channels
-EXAMPLE_CONVERSATION: list[LLMMessage] = [
-    LLMMessage(**msg) for msg in json.load(open("example_conversation.json"))
-]
