@@ -39,6 +39,39 @@ class ContextBuilder:
             reaction_manager: The reaction manager instance to use
         """
         self.reaction_manager = reaction_manager
+        self._reset_timestamps: dict[int, datetime.datetime] = {}
+
+    def reset_history_from(self, channel_id: int, timestamp: datetime.datetime) -> None:
+        """Reset message history to only include messages after the given timestamp.
+
+        Args:
+            channel_id: The Discord channel ID
+            timestamp: Messages before this timestamp will be excluded from context
+        """
+        self._reset_timestamps[channel_id] = timestamp
+
+    def remove_reset(self, channel_id: int) -> None:
+        """Remove the reset timestamp for a channel, allowing all messages to be included.
+
+        Args:
+            channel_id: The Discord channel ID
+        """
+        if channel_id in self._reset_timestamps:
+            del self._reset_timestamps[channel_id]
+
+    def _should_include_message(self, message: Message) -> bool:
+        """Check if a message should be included based on reset timestamp.
+
+        Args:
+            message: The Discord message to check
+
+        Returns:
+            True if the message should be included, False otherwise
+        """
+        channel_id = message.channel.id
+        if channel_id not in self._reset_timestamps:
+            return True
+        return message.created_at >= self._reset_timestamps[channel_id]
 
     @staticmethod
     def is_automated_message(content: str) -> bool:
@@ -61,6 +94,10 @@ class ContextBuilder:
         Returns:
             Formatted message dict or None if message should be skipped
         """
+        # Skip messages before reset timestamp
+        if not self._should_include_message(message):
+            return None
+
         content = message.content.strip()
 
         # Skip empty messages and automated bot messages
@@ -88,11 +125,11 @@ class ContextBuilder:
             System prompt message dict
         """
         # Get reaction stats for the channel
-        channel_id = channel.id
-        message_reactions = self.reaction_manager.get_channel_stats(channel_id)
-        reaction_summary = self.reaction_manager.format_reaction_summary(
-            message_reactions
-        )
+        # channel_id = channel.id
+        # message_reactions = self.reaction_manager.get_channel_stats(channel_id)
+        # reaction_summary = self.reaction_manager.format_reaction_summary(
+        #     message_reactions
+        # )
 
         # Format the complete prompt with server name, time and reactions
         server_name = get_server_name(channel)
@@ -106,8 +143,8 @@ class ContextBuilder:
 
         prompt.extend(load_system_prompt())
 
-        if reaction_summary and reaction_summary != "No reactions yet.":
-            prompt.append(f"\n# Channel Reactions:\n{reaction_summary}\n")
+        # if reaction_summary and reaction_summary != "No reactions yet.":
+        #     prompt.append(f"\n# Channel Reactions:\n{reaction_summary}\n")
 
         return LLMMessage(
             role="system",
@@ -128,8 +165,6 @@ class ContextBuilder:
         Returns:
             List of message dicts forming the LLM context
         """
-        context: List[LLMMessage] = config.EXAMPLE_CONVERSATION.copy()
-
         # Process messages in chronological order
         messages = sorted(messages, key=lambda m: m.created_at)
 
@@ -169,9 +204,16 @@ class ContextBuilder:
                 )
             )
 
-        # Add grouped messages to context
-        context.extend(grouped_messages)
-
         # Get max_history from model options and apply limit to final context
         max_history = config.load_model_options()["max_history"]
-        return [self.get_system_prompt(channel)] + context[-max_history:]
+        return (
+            [self.get_system_prompt(channel)]
+            + config.EXAMPLE_CONVERSATION
+            + [
+                LLMMessage(
+                    role="system",
+                    content="The messages above are provided only as examples, do not refer to them in conversation from now on.",
+                )
+            ]
+            + grouped_messages[-max_history:]
+        )

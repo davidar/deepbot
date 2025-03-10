@@ -301,6 +301,36 @@ def setup_commands(
                 message.append("-# No reactions yet.")
             await ctx.send("\n".join(message))
 
+    @bot.command(name="wipe")
+    async def wipe_command(ctx: Context[Bot]) -> None:
+        """Wipe the conversation history to only include messages from this point forward."""
+        if not isinstance(ctx.channel, discord.TextChannel):
+            await ctx.send(
+                "-# This command can only be used in text channels, not in DMs"
+            )
+            return
+
+        # Set the reset timestamp to now
+        context_builder.reset_history_from(ctx.channel.id, ctx.message.created_at)
+        await ctx.send(
+            "-# Conversation history has been wiped. Only messages from this point forward will be included in context."
+        )
+
+    @bot.command(name="unwipe")
+    async def unwipe_command(ctx: Context[Bot]) -> None:
+        """Restore access to all conversation history by removing the wipe point."""
+        if not isinstance(ctx.channel, discord.TextChannel):
+            await ctx.send(
+                "-# This command can only be used in text channels, not in DMs"
+            )
+            return
+
+        # Remove the reset timestamp
+        context_builder.remove_reset(ctx.channel.id)
+        await ctx.send(
+            "-# Conversation history has been restored. All messages will now be included in context."
+        )
+
     # Add custom command error handler
     @bot.event
     async def on_command_error(ctx: Context[Bot], error: Exception) -> None:
