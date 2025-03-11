@@ -1,6 +1,7 @@
 """LLM streaming response handling."""
 
 import asyncio
+import json
 import logging
 from enum import Enum
 from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
@@ -60,6 +61,9 @@ class LLMResponseHandler:
             logger.info(
                 f"Starting streaming response with {len(context)} context messages"
             )
+            logger.info(
+                f"Context: {json.dumps([{'role': m.role, 'content': m.content} for m in context], indent=2)}"
+            )
 
             stream = self.api_client.chat(  # pyright: ignore
                 model=str(config.MODEL_NAME),
@@ -105,7 +109,7 @@ class LLMResponseHandler:
                 yield (LineStatus.COMPLETE, current_line)
 
         except Exception as e:
-            error_message = f"Error in streaming response: {str(e)}"
+            error_message = f"-# Error in streaming response: {str(e)}"
             logger.error(error_message)
             logger.error(f"Full error details: {repr(e)}")
             yield (LineStatus.COMPLETE, error_message)
@@ -131,10 +135,7 @@ class LLMResponseHandler:
                 # Process the response
                 try:
                     await self._handle_streaming_response(
-                        message,
-                        channel_id,
-                        context_builder,
-                        message_history,
+                        message, context_builder, message_history
                     )
                 except Exception as e:
                     logger.error(f"Error processing response: {str(e)}")
@@ -177,7 +178,6 @@ class LLMResponseHandler:
     async def _handle_streaming_response(
         self,
         message: Message,
-        channel_id: int,
         context_builder: ContextBuilder,
         message_history: List[Message],
     ) -> None:
@@ -185,7 +185,6 @@ class LLMResponseHandler:
 
         Args:
             message: The Discord message to respond to
-            channel_id: The Discord channel ID
             context_builder: The context builder to use
             message_history: The message history to build context from
         """

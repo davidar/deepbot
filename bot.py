@@ -17,7 +17,7 @@ from utils import get_channel_name
 
 # Set up logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()],
 )
@@ -90,10 +90,6 @@ class DeepBot(commands.Bot):
 
     async def on_message(self, message: discord.Message) -> None:
         """Event triggered when a message is received."""
-        # Ignore messages from the bot itself
-        if message.author == self.user:
-            return
-
         channel_id = message.channel.id
 
         # Get or initialize message history for this channel
@@ -103,6 +99,10 @@ class DeepBot(commands.Bot):
             )
         elif message.content.strip():
             self.message_history.add_message(message)
+
+        # Ignore messages from the bot itself (but after adding to history)
+        if message.author == self.user:
+            return
 
         # Check if this message is directed at the bot
         is_dm = isinstance(message.channel, discord.DMChannel)
