@@ -15,6 +15,7 @@ from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
 from message_history import MessageHistoryManager
 from reactions import ReactionManager
+from user_management import UserManager
 
 Bot = commands.Bot
 Context = commands.Context
@@ -29,6 +30,7 @@ def setup_commands(
     context_builder: ContextBuilder,
     llm_handler: LLMResponseHandler,
     reaction_manager: ReactionManager,
+    user_manager: UserManager,
 ) -> None:
     """Set up bot commands.
 
@@ -38,6 +40,7 @@ def setup_commands(
         context_builder: The context builder instance
         llm_handler: The LLM response handler instance
         reaction_manager: The reaction manager instance
+        user_manager: The user manager instance
     """
 
     @bot.command(name="options")
@@ -452,6 +455,75 @@ def setup_commands(
         await ctx.send(
             "-# Conversation history has been restored. All messages will now be included in context."
         )
+
+    @bot.command(name="ignore")
+    async def ignore_command(ctx: Context[Bot], member: discord.Member) -> None:
+        """Ignore messages from a user.
+
+        Args:
+            member: The Discord member to ignore
+        """
+        user_manager.ignore_user(member.id)
+        await ctx.send(f"-# Now ignoring messages from {member.display_name}")
+
+    @bot.command(name="unignore")
+    async def unignore_command(ctx: Context[Bot], member: discord.Member) -> None:
+        """Stop ignoring messages from a user.
+
+        Args:
+            member: The Discord member to unignore
+        """
+        user_manager.unignore_user(member.id)
+        await ctx.send(f"-# No longer ignoring messages from {member.display_name}")
+
+    @bot.command(name="limit")
+    async def limit_command(
+        ctx: Context[Bot],
+        member: discord.Member,
+        consecutive_limit: Optional[int] = None,
+    ) -> None:
+        """Set a consecutive message limit for a user.
+
+        Args:
+            member: The Discord member to limit
+            consecutive_limit: Maximum consecutive messages allowed, or None to remove
+        """
+        try:
+            user_manager.set_consecutive_limit(member.id, consecutive_limit)
+            if consecutive_limit is None:
+                await ctx.send(f"-# Removed message limit for {member.display_name}")
+            else:
+                await ctx.send(
+                    f"-# Set consecutive message limit for {member.display_name} to {consecutive_limit} messages"
+                )
+        except ValueError as e:
+            await ctx.send(f"-# Error: {str(e)}")
+
+    @bot.command(name="restrictions")
+    async def restrictions_command(ctx: Context[Bot], member: discord.Member) -> None:
+        """View current restrictions for a user.
+
+        Args:
+            member: The Discord member to check
+        """
+        restrictions = user_manager.get_user_restrictions(member.id)
+        if not restrictions:
+            await ctx.send(f"-# No restrictions set for {member.display_name}")
+            return
+
+        message = [f"-# Current restrictions for {member.display_name}:"]
+        if restrictions.ignored:
+            message.append("-# • User is ignored")
+        if restrictions.consecutive_limit is not None:
+            message.append(
+                f"-# • Limited to {restrictions.consecutive_limit} consecutive messages"
+            )
+            if restrictions.consecutive_count > 0:
+                message.append(
+                    f"-# • Currently at {restrictions.consecutive_count} consecutive messages"
+                )
+
+        await ctx.send("\n".join(message))
 
     # Add custom command error handler
     @bot.event

@@ -4,6 +4,7 @@
 # System files
 system_prompt.txt
 reaction_data.json
+user_restrictions.json
 
 # Python
 __pycache__/

@@ -12,6 +12,7 @@ from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
 from message_history import MessageHistoryManager
 from reactions import ReactionManager
+from user_management import UserManager
 from utils import get_channel_name
 
 # Set up logging
@@ -51,6 +52,7 @@ class DeepBot(commands.Bot):
         self.reaction_manager = ReactionManager()
         self.context_builder = ContextBuilder(self.reaction_manager)
         self.llm_handler = LLMResponseHandler(self.api_client, self.user)
+        self.user_manager = UserManager()
 
         # Set up commands
         setup_commands(
@@ -59,6 +61,7 @@ class DeepBot(commands.Bot):
             self.context_builder,
             self.llm_handler,
             self.reaction_manager,
+            self.user_manager,
         )
 
         # Update context builder with command names after commands are set up
@@ -127,6 +130,13 @@ class DeepBot(commands.Bot):
         if not is_directed_at_bot:
             return
 
+        # Check user restrictions for non-command messages directed at the bot
+        can_message, reason = self.user_manager.can_message(message.author.id)
+        if not can_message:
+            # Send status message
+            await message.reply(f"-# {reason}")
+            return
+
         try:
             # Add message to response queue and start processing
             self.llm_handler.add_to_queue(channel_id, message)
@@ -137,6 +147,7 @@ class DeepBot(commands.Bot):
             )
             # Send acknowledgment
             await message.add_reaction("💭")
+
             logger.info(f"Added message to queue for channel {channel_id}")
         except Exception as e:
             logger.error(f"Error queueing response: {str(e)}")
