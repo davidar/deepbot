@@ -97,14 +97,14 @@ class ContextBuilder:
                 and reference_message.reference.resolved
                 and isinstance(reference_message.reference.resolved, Message)
             ):
-                # Include messages up to and including the original message, then the reference message
+                # Include messages up to and including the original message
                 return (
                     message.created_at
                     <= reference_message.reference.resolved.created_at
-                    or message.id == reference_message.id
                 )
-            # Otherwise just include up to the reference message
-            return message.created_at <= reference_message.created_at
+            else:
+                # Otherwise just include everything before the reference message
+                return message.created_at < reference_message.created_at
 
         return True
 
@@ -129,10 +129,6 @@ class ContextBuilder:
         Returns:
             Formatted message dict or None if message should be skipped
         """
-        # Skip messages before reset timestamp
-        if not self._should_include_message(message):
-            return None
-
         # Check for commands in the original message content
         words = message.content.split()
         if (
@@ -273,7 +269,7 @@ class ContextBuilder:
 
         # Get max_history from model options and apply limit to final context
         max_history = config.load_model_options()["max_history"]
-        return (
+        context = (
             [self.get_system_prompt(channel)]
             + example_conversation.load_example_conversation()
             + [
@@ -284,3 +280,22 @@ class ContextBuilder:
             ]
             + grouped_messages[-max_history:]
         )
+
+        if reference_message:
+            formatted_reference_message = self._format_message(reference_message)
+            if formatted_reference_message is None:
+                raise ValueError("Unable to format reference message")
+            context.append(
+                LLMMessage(
+                    role="system",
+                    content=f"The messages above provide context for the conversation. Respond to the message below.",
+                )
+            )
+            context.append(
+                LLMMessage(
+                    role=formatted_reference_message["role"],
+                    content=formatted_reference_message["content"],
+                )
+            )
+
+        return context
