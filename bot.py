@@ -12,6 +12,7 @@ from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
 from message_history import MessageHistoryManager
 from reactions import ReactionManager
+from tools import tool_registry
 from user_management import UserManager
 from utils import get_channel_name
 
@@ -53,6 +54,11 @@ class DeepBot(commands.Bot):
         self.context_builder = ContextBuilder(self.reaction_manager)
         self.llm_handler = LLMResponseHandler(self.api_client, self.user)
         self.user_manager = UserManager()
+
+        # Log available tools
+        logger.info(
+            f"Available tools: {[tool['function']['name'] for tool in tool_registry.get_tools()]}"
+        )
 
         # Set up commands
         setup_commands(

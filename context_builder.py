@@ -201,6 +201,24 @@ class ContextBuilder:
 
         prompt.extend(load_system_prompt())
 
+        # Add tool information
+        prompt.extend(
+            [
+                "",
+                "You have access to the following tools that you can use when appropriate:",
+                "1. dice_roll - Use this to roll dice. Provide the number of dice and sides (e.g., for 2d20, use dice=2, sides=20)",
+                "",
+                "When a user asks for information that could be answered using one of these tools, use the appropriate tool rather than making up information.",
+                "",
+                "For dice rolls, use the dice_roll tool whenever someone wants to roll dice or generate random numbers within a range.",
+                "Examples of when to use dice_roll:",
+                '- "Roll a d20" → dice=1, sides=20',
+                '- "Roll 3d6" → dice=3, sides=6',
+                '- "Roll some dice" → dice=1, sides=6 (default to a standard die)',
+                '- "Give me a random number between 1 and 100" → dice=1, sides=100',
+            ]
+        )
+
         # if reaction_summary and reaction_summary != "No reactions yet.":
         #     prompt.append(f"\n# Channel Reactions:\n{reaction_summary}\n")
 
