@@ -275,7 +275,7 @@ class ContextBuilder:
             + [
                 LLMMessage(
                     role="system",
-                    content="The messages above are provided only as examples, do not refer to them in conversation from now on.",
+                    content="The messages above are a distant memory. You recall them, but they are not part of your current conversation.",
                 )
             ]
             + grouped_messages[-max_history:]
