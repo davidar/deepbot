@@ -3,7 +3,7 @@
 import io
 import json
 import logging
-from typing import Literal, Optional, cast, get_type_hints
+from typing import List, Optional, get_type_hints
 
 import discord
 from discord.ext import commands
@@ -259,114 +259,142 @@ def setup_commands(
 
         Usage:
         !example - View current example conversation
-        !example add <role> <content> - Add a new message
-        !example remove <index> - Remove a message by index
-        !example edit <index> [role] [content] - Edit a message
+        !example add <user_msg> | <bot_msg> - Add a new message pair
+        !example remove <number> - Remove a message pair by number
+        !example edit <number> <user_msg> | <bot_msg> - Edit a message pair
         """
         if not action:
-            # Display current example conversation as a file attachment
-            file = discord.File("example_conversation.json")
-            await ctx.send("-# Current Example Conversation:", file=file)
-            await ctx.send(
-                "-# Use `example add <role> <content>`, `example remove <index>`, or `example edit <index> [role] [content]` to modify"
+            # Display numbered list of conversation pairs
+            pairs = example_conversation.load_pairs()
+            if not pairs:
+                await ctx.send("-# No example conversation pairs yet")
+                return
+
+            messages = ["-# Current Example Conversation:"]
+            for i, pair in enumerate(pairs, 1):
+                messages.append(f"-# {i}. User: {pair.user} | Bot: {pair.assistant}")
+            messages.append(
+                "-# Use `example add <user_msg> | <bot_msg>`, `example remove <number>`, or `example edit <number> <user_msg> | <bot_msg>` to modify"
             )
+
+            # Split into chunks if too long
+            msg = "\n".join(messages)
+            if len(msg) > 1900:  # Discord message length limit safety margin
+                chunks: List[str] = []
+                current_chunk: List[str] = []
+                for line in messages:
+                    if len("\n".join(current_chunk + [line])) > 1900:
+                        chunks.append("\n".join(current_chunk))
+                        current_chunk = [line]
+                    else:
+                        current_chunk.append(line)
+                if current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                for chunk in chunks:
+                    await ctx.send(chunk)
+            else:
+                await ctx.send(msg)
             return
 
         if action.lower() == "add" and content:
             try:
-                # Split content into role and message content
-                role_str, *content_parts = content.split(maxsplit=1)
-                if not content_parts:
-                    await ctx.send("-# Please provide both role and content")
-                    return
-                message_content = content_parts[0]
-
-                # Validate role
-                if role_str not in ["user", "assistant", "system", "tool"]:
+                # Split content into user and assistant messages using | as delimiter
+                parts = content.split("|", 1)
+                if len(parts) != 2:
                     await ctx.send(
-                        "-# Role must be one of: user, assistant, system, tool"
+                        "-# Please provide both user and assistant messages separated by |"
                     )
                     return
 
-                messages = example_conversation.add_message(
-                    cast(Literal["user", "assistant", "system", "tool"], role_str),
-                    message_content,
-                )
-                await ctx.send(
-                    f"-# Added new message to example conversation. Total messages: {len(messages)}"
-                )
+                user_msg = parts[0].strip()
+                bot_msg = parts[1].strip()
+
+                pairs = example_conversation.add_pair(user_msg, bot_msg)
+                await ctx.send(f"-# Added new message pair #{len(pairs)}:")
+                await ctx.send(f"-# User: {user_msg}\n-# Bot: {bot_msg}")
                 return
 
             except Exception as e:
-                logger.error(f"Error adding example message: {e}")
-                await ctx.send(f"-# Error adding message: {str(e)}")
+                logger.error(f"Error adding example message pair: {e}")
+                await ctx.send(f"-# Error adding message pair: {str(e)}")
                 return
 
         if action.lower() == "remove" and content:
             try:
-                index = int(content)
-                messages, removed = example_conversation.remove_message(index)
+                # Convert to 0-based index
+                index = int(content) - 1
+                if index < 0:
+                    await ctx.send("-# Please provide a positive number")
+                    return
+
+                pairs, removed = example_conversation.remove_pair(index)
                 if removed:
                     await ctx.send(
-                        f"-# Removed message at index {index}. Total messages: {len(messages)}"
+                        f"-# Removed message pair #{index + 1}:\n"
+                        f"-# User: {removed.user}\n"
+                        f"-# Bot: {removed.assistant}\n"
+                        f"-# Total pairs remaining: {len(pairs)}"
                     )
                 else:
-                    await ctx.send(f"-# No message found at index {index}")
+                    await ctx.send(f"-# No message pair #{index + 1} found")
                 return
 
             except ValueError:
-                await ctx.send("-# Please provide a valid index number")
+                await ctx.send("-# Please provide a valid number")
                 return
             except Exception as e:
-                logger.error(f"Error removing example message: {e}")
-                await ctx.send(f"-# Error removing message: {str(e)}")
+                logger.error(f"Error removing example message pair: {e}")
+                await ctx.send(f"-# Error removing message pair: {str(e)}")
                 return
 
         if action.lower() == "edit" and content:
             try:
-                # Split content into index and optional role/content
-                parts = content.split(maxsplit=2)
-                if len(parts) < 1:
-                    await ctx.send("-# Please provide an index")
+                # Split content into index and messages
+                parts = content.split(maxsplit=1)
+                if len(parts) < 2:
+                    await ctx.send("-# Please provide a number and messages")
                     return
 
-                index = int(parts[0])
-                role: Optional[Literal["user", "assistant", "system", "tool"]] = None
-                message_content = None
+                # Convert to 0-based index
+                index = int(parts[0]) - 1
+                if index < 0:
+                    await ctx.send("-# Please provide a positive number")
+                    return
 
-                if len(parts) > 1:
-                    role_str = parts[1]
-                    if role_str not in ["user", "assistant", "system", "tool"]:
-                        await ctx.send(
-                            "-# Role must be one of: user, assistant, system, tool"
-                        )
-                        return
-                    role = cast(
-                        Literal["user", "assistant", "system", "tool"], role_str
-                    )
+                msg_parts = parts[1].split("|", 1)
 
-                if len(parts) > 2:
-                    message_content = parts[2]
+                user_msg = None
+                bot_msg = None
 
-                messages, edited = example_conversation.edit_message(
-                    index, role, message_content
-                )
-                if edited:
-                    await ctx.send(f"-# Edited message at index {index}")
+                if len(msg_parts) == 2:
+                    # Both messages provided
+                    user_msg = msg_parts[0].strip() or None
+                    bot_msg = msg_parts[1].strip() or None
                 else:
-                    await ctx.send(f"-# No message found at index {index}")
+                    # Only one message provided - treat as user message
+                    user_msg = msg_parts[0].strip() or None
+
+                pairs, edited = example_conversation.edit_pair(index, user_msg, bot_msg)
+                if edited:
+                    await ctx.send(
+                        f"-# Edited message pair #{index + 1} to:\n"
+                        f"-# User: {edited.user}\n"
+                        f"-# Bot: {edited.assistant}"
+                    )
+                else:
+                    await ctx.send(f"-# No message pair #{index + 1} found")
                 return
 
             except ValueError:
-                await ctx.send("-# Please provide a valid index number")
+                await ctx.send("-# Please provide a valid number")
                 return
             except Exception as e:
-                logger.error(f"Error editing example message: {e}")
-                await ctx.send(f"-# Error editing message: {str(e)}")
+                logger.error(f"Error editing example message pair: {e}")
+                await ctx.send(f"-# Error editing message pair: {str(e)}")
                 return
 
         await ctx.send(
-            "-# Invalid command, use `example`, `example add <role> <content>`, `example remove <index>`, or `example edit <index> [role] [content]`"
+            "-# Invalid command, use `example`, `example add <user_msg> | <bot_msg>`, `example remove <number>`, or `example edit <number> <user_msg> | <bot_msg>`"
         )
 
     @bot.command(name="shutup")
