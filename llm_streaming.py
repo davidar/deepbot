@@ -3,11 +3,23 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
+from typing import (
+    Any,
+    AsyncGenerator,
+    AsyncIterator,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+)
 
 import ollama
 from discord import ClientUser, Message
+from ollama import ChatResponse
 from ollama import Message as LLMMessage
 
 import config
@@ -16,6 +28,30 @@ from tools import tool_registry
 
 # Set up logging
 logger = logging.getLogger("deepbot.llm")
+
+
+@dataclass
+class ToolCall:
+    """A tool call from the LLM."""
+
+    id: str
+    type: str
+    function: Dict[str, Any]
+
+
+@dataclass
+class ChunkMessage:
+    """A message chunk from the LLM."""
+
+    content: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+
+
+@dataclass
+class Chunk:
+    """A chunk from the LLM stream."""
+
+    message: ChunkMessage
 
 
 class LineStatus(Enum):
@@ -44,18 +80,302 @@ class LLMResponseHandler:
         self.response_queues: Dict[int, asyncio.Queue[Message]] = {}
         self.response_tasks: Dict[int, Optional[asyncio.Task[None]]] = {}
         self.shutup_tasks: Set[asyncio.Task[None]] = set()
-
-        # Get the tool registry
         self.tool_registry = tool_registry
+
+    async def _process_content_chunk(
+        self,
+        content: str,
+        current_line: str,
+        has_non_whitespace: bool,
+    ) -> Tuple[str, bool, List[Tuple[LineStatus, str]]]:
+        """Process a content chunk and generate appropriate yields.
+
+        Args:
+            content: The content to process
+            current_line: The current line being built
+            has_non_whitespace: Whether non-whitespace content has been seen
+
+        Returns:
+            Tuple of (updated current_line, updated has_non_whitespace, yields)
+        """
+        yields: List[Tuple[LineStatus, str]] = []
+        if content:
+            current_line += content
+
+            # Check if we've received non-whitespace content
+            if not has_non_whitespace and content.strip():
+                has_non_whitespace = True
+                yields.append((LineStatus.ACCUMULATING, ""))
+
+            # Check for newlines in current line
+            while "\n" in current_line:
+                # Split at first newline
+                to_send, current_line = current_line.split("\n", 1)
+                has_non_whitespace = False  # Reset for next line
+
+                # Only yield if we have non-empty content
+                if to_send.strip():
+                    yields.append((LineStatus.COMPLETE, to_send))
+
+        return current_line, has_non_whitespace, yields
+
+    def _create_tool_call_data(self, tool_call: Any) -> Dict[str, Any]:
+        """Create tool call data from a tool call object.
+
+        Args:
+            tool_call: The tool call object
+
+        Returns:
+            The tool call data dictionary
+        """
+        function_name = tool_call.function.name
+        function_args = tool_call.function.arguments
+
+        return {
+            "name": function_name,
+            "args": (
+                function_args
+                if isinstance(function_args, dict)
+                else json.loads(function_args)
+            ),
+        }
+
+    def _create_tool_response_message(self, response: str) -> LLMMessage:
+        """Create a tool response message.
+
+        Args:
+            response: The tool response content
+
+        Returns:
+            The tool response message
+        """
+        return LLMMessage(role="tool", content=response)
+
+    async def _handle_tool_response(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        context: List[LLMMessage],
+        tools: List[Dict[str, Any]],
+        message: Message,
+    ) -> AsyncGenerator[Tuple[LineStatus, str], None]:
+        """Handle a tool response and generate a new stream.
+
+        Args:
+            tool_name: The name of the tool
+            tool_args: The tool arguments
+            context: The conversation context
+            tools: The available tools
+            message: The Discord message to respond to
+
+        Yields:
+            Status and content pairs from the new stream
+        """
+        handler = self.tool_registry.get_handler(tool_name)
+        if not handler:
+            logger.warning(f"No handler found for tool: {tool_name}")
+            return
+
+        try:
+            # Get and log tool response
+            tool_response = handler(tool_args)
+            logger.info(f"Tool response: {tool_response}")
+
+            # Parse the response
+            tool_response_data = json.loads(tool_response)
+
+            # Send the discord message if present
+            if "discord_message" in tool_response_data:
+                await message.channel.send(tool_response_data["discord_message"])
+
+            # Add response to context
+            response_message = self._create_tool_response_message(tool_response)
+            context.append(response_message)
+            logger.info(f"Added tool response to context: {response_message}")
+
+            # Create new stream
+            new_stream = await self._create_chat_stream(context, tools)
+
+            # Trigger typing indicator before starting new stream
+            async with message.channel.typing():
+                # Process the new stream
+                async for status, content in self._process_stream(
+                    new_stream, context, tools, message
+                ):
+                    yield status, content
+
+        except Exception as e:
+            logger.error(f"Error handling tool response: {str(e)}")
+
+    async def _create_chat_stream(
+        self,
+        context: List[LLMMessage],
+        tools: List[Dict[str, Any]],
+    ) -> Iterator[ChatResponse]:
+        """Create a new chat stream.
+
+        Args:
+            context: The conversation context
+            tools: The available tools
+
+        Returns:
+            An async generator that yields chunks from the LLM
+        """
+        logger.info("Creating new chat stream")
+        return self.api_client.chat(  # pyright: ignore
+            model=str(config.MODEL_NAME),
+            messages=context,
+            stream=True,
+            keep_alive=-1,
+            options=config.load_model_options(),
+            tools=tools,
+        )
+
+    async def _handle_tool_call(
+        self,
+        tool_call: Any,
+        context: List[LLMMessage],
+        tools: List[Dict[str, Any]],
+        current_line: str,
+        has_non_whitespace: bool,
+        message: Message,
+    ) -> AsyncGenerator[Tuple[LineStatus, str], None]:
+        """Handle a tool call and yield appropriate status/content pairs.
+
+        Args:
+            tool_call: The tool call to handle
+            context: The conversation context
+            tools: The available tools
+            current_line: The current line being built
+            has_non_whitespace: Whether non-whitespace content has been seen
+            message: The Discord message to respond to
+
+        Yields:
+            Tuples of (LineStatus, content)
+        """
+        if not hasattr(tool_call, "function"):
+            return
+
+        try:
+            # Create and yield tool call data
+            tool_data = self._create_tool_call_data(tool_call)
+            yield (LineStatus.TOOL_CALL, json.dumps(tool_data))
+
+            # Handle tool response
+            async for status, content in self._handle_tool_response(
+                tool_data["name"],
+                tool_data["args"],
+                context,
+                tools,
+                message,
+            ):
+                yield status, content
+
+        except Exception as e:
+            logger.error(f"Error processing tool call: {str(e)}")
+
+    async def _process_chunk(
+        self,
+        chunk: ChatResponse,
+        context: List[LLMMessage],
+        tools: List[Dict[str, Any]],
+        current_line: str,
+        has_non_whitespace: bool,
+        message: Message,
+    ) -> AsyncGenerator[Tuple[LineStatus, str, str, bool], None]:
+        """Process a single chunk from the stream.
+
+        Args:
+            chunk: The chunk to process
+            context: The conversation context
+            tools: The available tools
+            current_line: The current line being built
+            has_non_whitespace: Whether non-whitespace content has been seen
+            message: The Discord message to respond to
+
+        Yields:
+            Tuples of (status, content, new_current_line, new_has_non_whitespace)
+        """
+        # Handle tool calls
+        if chunk.message.tool_calls:
+            for tool_call in chunk.message.tool_calls:
+                async for status, content in self._handle_tool_call(
+                    tool_call, context, tools, current_line, has_non_whitespace, message
+                ):
+                    yield status, content, "", False
+
+        # Handle regular content
+        elif chunk.message.content:
+            current_line, has_non_whitespace, yields = (
+                await self._process_content_chunk(
+                    chunk.message.content, current_line, has_non_whitespace
+                )
+            )
+            for status, content in yields:
+                yield status, content, current_line, has_non_whitespace
+
+    async def _process_stream(
+        self,
+        stream: Iterator[ChatResponse],
+        context: List[LLMMessage],
+        tools: List[Dict[str, Any]],
+        message: Message,
+        current_line: str = "",
+        has_non_whitespace: bool = False,
+    ) -> AsyncIterator[Tuple[LineStatus, str]]:
+        """Process a stream and yield appropriate status/content pairs.
+
+        Args:
+            stream: The stream to process
+            context: The conversation context
+            tools: The available tools
+            message: The Discord message to respond to
+            current_line: The current line being built
+            has_non_whitespace: Whether non-whitespace content has been seen
+
+        Yields:
+            Tuples of (LineStatus, content)
+        """
+        try:
+            for chunk in stream:
+                try:
+                    # Log chunk
+                    logger.debug(f"Received chunk type: {type(chunk)}")
+                    logger.debug(f"Received chunk: {chunk}")
+
+                    # Process chunk
+                    async for (
+                        status,
+                        content,
+                        new_line,
+                        new_whitespace,
+                    ) in self._process_chunk(
+                        chunk, context, tools, current_line, has_non_whitespace, message
+                    ):
+                        yield status, content
+                        current_line = new_line
+                        has_non_whitespace = new_whitespace
+
+                except Exception as e:
+                    logger.error(f"Error processing chunk: {str(e)}")
+
+            # Handle any remaining text
+            if current_line.strip():
+                yield (LineStatus.COMPLETE, current_line)
+
+        except Exception as e:
+            logger.error(f"Error processing stream: {str(e)}")
 
     async def _stream_response_lines(
         self,
         context: List[LLMMessage],
+        message: Message,
     ) -> AsyncGenerator[Tuple[LineStatus, str], None]:
         """Generator that yields line status and content as they stream in from the API.
 
         Args:
             context: The conversation context to send to the LLM
+            message: The Discord message to respond to
 
         Yields:
             Tuples of (LineStatus, content) where:
@@ -64,6 +384,7 @@ class LLMResponseHandler:
             - LineStatus.TOOL_CALL indicates a tool call
         """
         try:
+            # Log context and tools
             logger.info(
                 f"Starting streaming response with {len(context)} context messages"
             )
@@ -71,161 +392,18 @@ class LLMResponseHandler:
                 f"Context: {json.dumps([{'role': m.role, 'content': m.content} for m in context], indent=2)}"
             )
 
-            # Get tools from the registry
+            # Get tools
             tools = self.tool_registry.get_tools()
             logger.info(
-                f"Available tools for this response: {[tool['function']['name'] for tool in tools]}"
+                f"Available tools: {[tool['function']['name'] for tool in tools]}"
             )
 
-            stream = self.api_client.chat(  # pyright: ignore
-                model=str(config.MODEL_NAME),
-                messages=context,
-                stream=True,
-                keep_alive=-1,
-                options=config.load_model_options(),
-                tools=tools,
-            )
-
-            # Variables to track streaming state
-            current_line = ""  # Current line being built
-            has_non_whitespace = False
-
-            # Process streaming response
-            for chunk in stream:
-                try:
-                    # Log chunk safely
-                    try:
-                        logger.debug(f"Received chunk type: {type(chunk)}")
-                        logger.debug(f"Received chunk: {chunk}")
-                    except Exception as e:
-                        logger.debug(f"Could not log chunk: {str(e)}")
-
-                    # Check for tool calls in the chunk directly
-                    if (
-                        hasattr(chunk, "message")
-                        and hasattr(chunk.message, "tool_calls")
-                        and chunk.message.tool_calls
-                    ):
-                        for tool_call in chunk.message.tool_calls:
-                            try:
-                                if hasattr(tool_call, "function"):
-                                    function_name = tool_call.function.name
-                                    function_args = tool_call.function.arguments
-
-                                    # Log the tool call
-                                    logger.info(
-                                        f"Tool call detected: {function_name}({function_args})"
-                                    )
-
-                                    # Store tool call data
-                                    tool_call_data = {
-                                        "name": function_name,
-                                        "args": (
-                                            function_args
-                                            if isinstance(function_args, dict)
-                                            else json.loads(function_args)
-                                        ),
-                                    }
-
-                                    # Yield the tool call
-                                    logger.info(
-                                        f"Yielding tool call: {json.dumps(tool_call_data)}"
-                                    )
-                                    yield (
-                                        LineStatus.TOOL_CALL,
-                                        json.dumps(tool_call_data),
-                                    )
-
-                                    # Handle the tool call
-                                    handler = self.tool_registry.get_handler(
-                                        function_name
-                                    )
-                                    if handler:
-                                        logger.info(
-                                            f"Found handler for tool: {function_name}"
-                                        )
-                                        try:
-                                            # Get the tool response
-                                            tool_response = handler(
-                                                tool_call_data["args"]
-                                            )
-                                            logger.info(
-                                                f"Tool response: {tool_response}"
-                                            )
-
-                                            # Add the tool response to the context
-                                            context.append(
-                                                LLMMessage(
-                                                    role="tool",
-                                                    content=tool_response,
-                                                )
-                                            )
-                                            logger.info(
-                                                f"Added tool response to context"
-                                            )
-
-                                            # Restart the stream with the updated context
-                                            logger.info(
-                                                f"Restarting stream with updated context"
-                                            )
-                                            stream = (
-                                                self.api_client.chat(  # pyright: ignore
-                                                    model=str(config.MODEL_NAME),
-                                                    messages=context,
-                                                    stream=True,
-                                                    keep_alive=-1,
-                                                    options=config.load_model_options(),
-                                                    tools=tools,
-                                                )
-                                            )
-
-                                            # Reset streaming state
-                                            current_line = ""
-                                            has_non_whitespace = False
-                                            continue
-
-                                        except Exception as e:
-                                            logger.error(
-                                                f"Error handling tool call: {str(e)}"
-                                            )
-                                    else:
-                                        logger.warning(
-                                            f"No handler found for tool: {function_name}"
-                                        )
-
-                            except Exception as e:
-                                logger.error(f"Error processing tool call: {str(e)}")
-                                continue
-
-                    # Process regular content
-                    if hasattr(chunk, "message") and hasattr(chunk.message, "content"):
-                        content = chunk.message.content
-                        if content:
-                            current_line += content
-
-                            # Check if we've received non-whitespace content
-                            if not has_non_whitespace and content.strip():
-                                has_non_whitespace = True
-                                # Signal start of new line with content
-                                yield (LineStatus.ACCUMULATING, "")
-
-                            # Check for newlines in current line
-                            while "\n" in current_line:
-                                # Split at first newline
-                                to_send, current_line = current_line.split("\n", 1)
-                                has_non_whitespace = False  # Reset for next line
-
-                                # Only yield if we have non-empty content
-                                if to_send.strip():
-                                    yield (LineStatus.COMPLETE, to_send)
-
-                except Exception as e:
-                    logger.error(f"Error processing chunk: {str(e)}")
-                    continue
-
-            # Handle any remaining text
-            if current_line.strip():
-                yield (LineStatus.COMPLETE, current_line)
+            # Create and process stream
+            stream = await self._create_chat_stream(context, tools)
+            async for status, content in self._process_stream(
+                stream, context, tools, message
+            ):
+                yield status, content
 
         except Exception as e:
             error_message = f"-# Error in streaming response: {str(e)}"
@@ -315,24 +493,19 @@ class LLMResponseHandler:
 
         async with message.channel.typing():
             try:
-                # Add typing reaction
-                await message.add_reaction("⌨️")
-                # Remove the thinking reaction
-                try:
-                    await message.remove_reaction("💭", self.bot_user)
-                except:
-                    # Reaction might not exist, that's okay
-                    pass
+                # Update message reactions
+                await self._update_message_reactions(message)
 
                 # Build context for LLM
                 context = context_builder.build_context(
                     message_history, message.channel, message
                 )
 
+                # Process the response
                 first_message = True
                 line_count = 0
 
-                async for status, line in self._stream_response_lines(context):
+                async for status, line in self._stream_response_lines(context, message):
                     # Check if this specific task has been told to shut up
                     if current_task in self.shutup_tasks:
                         logger.info(f"Task was told to shut up, stopping response")
@@ -344,127 +517,127 @@ class LLMResponseHandler:
                         async with message.channel.typing():
                             pass
                     elif status == LineStatus.TOOL_CALL:
-                        logger.info(
-                            f"Processing tool call in _handle_streaming_response: {line}"
+                        await self._handle_tool_call_message(
+                            message, line, first_message
                         )
-                        try:
-                            # Parse the tool call data
-                            tool_data = json.loads(line)
-                            tool_name = tool_data.get("name", "unknown")
-                            tool_args = tool_data.get("args", {})
-
-                            logger.info(
-                                f"Tool call data in _handle_streaming_response: name={tool_name}, args={tool_args}"
-                            )
-
-                            # Send a message indicating tool usage
-                            tool_message = None
-                            if first_message:
-                                tool_message = await message.reply(
-                                    f"-# 🔧 Using tool: `{tool_name}`..."
-                                )
-                                first_message = False
-                            else:
-                                tool_message = await message.channel.send(
-                                    f"-# 🔧 Using tool: `{tool_name}`..."
-                                )
-
-                            logger.info(
-                                f"Sent tool usage message: {tool_message.id if tool_message else 'None'}"
-                            )
-
-                            line_count += 1
-
-                            # Handle the tool response for dice_roll
-                            if tool_name == "dice_roll":
-                                logger.info(
-                                    f"Processing dice_roll tool call in _handle_streaming_response"
-                                )
-                                # Get the handler
-                                handler = self.tool_registry.get_handler(tool_name)
-                                if handler:
-                                    logger.info(
-                                        f"Found handler for dice_roll in _handle_streaming_response"
-                                    )
-                                    # Get the tool response
-                                    tool_response_json = handler(tool_args)
-                                    logger.info(
-                                        f"Dice roll response in _handle_streaming_response: {tool_response_json}"
-                                    )
-                                    try:
-                                        # Parse the response
-                                        tool_response = json.loads(tool_response_json)
-                                        # Check if there's a discord_message
-                                        if "discord_message" in tool_response:
-                                            # Send the discord message
-                                            discord_message = tool_response[
-                                                "discord_message"
-                                            ]
-                                            logger.info(
-                                                f"Sending dice roll result in _handle_streaming_response: {discord_message}"
-                                            )
-                                            result_message = await message.channel.send(
-                                                discord_message
-                                            )
-                                            logger.info(
-                                                f"Sent dice roll result message: {result_message.id}"
-                                            )
-                                        else:
-                                            logger.warning(
-                                                f"No discord_message in tool response in _handle_streaming_response"
-                                            )
-                                    except json.JSONDecodeError:
-                                        logger.warning(
-                                            f"Failed to parse tool response in _handle_streaming_response: {tool_response_json}"
-                                        )
-                                else:
-                                    logger.warning(
-                                        f"No handler found for dice_roll in _handle_streaming_response"
-                                    )
-
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to process tool call in _handle_streaming_response: {str(e)}"
-                            )
-                            logger.exception(e)  # Log the full exception with traceback
+                        first_message = False
+                        line_count += 1
                     elif status == LineStatus.COMPLETE and line.strip():
-                        logger.info(f"Sending line: {line}")
-                        try:
-                            if first_message:
-                                # First message should be a reply
-                                await message.reply(line)
-                                first_message = False
-                            else:
-                                await message.channel.send(line)
+                        await self._handle_complete_message(
+                            message, line, first_message, line_count
+                        )
+                        first_message = False
+                        line_count += 1
 
-                            line_count += 1
+                    # Check line limit
+                    max_lines = config.load_model_options()["max_response_lines"]
+                    if line_count >= max_lines:
+                        logger.info("Reached maximum line limit, stopping response")
+                        await message.channel.send(
+                            "-# Response truncated due to length limit"
+                        )
+                        break
 
-                            max_lines = config.load_model_options()[
-                                "max_response_lines"
-                            ]
-                            if line_count >= max_lines:
-                                logger.info(
-                                    "Reached maximum line limit, stopping response"
-                                )
-                                await message.channel.send(
-                                    "-# Response truncated due to length limit"
-                                )
-                                break
-
-                        except Exception as e:
-                            logger.warning(f"Failed to send message chunk: {str(e)}")
             except Exception as e:
                 logger.error(f"Error sending messages: {str(e)}")
                 await message.reply(f"-# Error sending messages: {str(e)}")
             finally:
-                # Remove the typing reaction
-                try:
-                    await message.remove_reaction("⌨️", self.bot_user)
-                except:
-                    # Reaction might not exist, that's okay
-                    pass
-                # Remove this task from the shutup set
-                self.shutup_tasks.discard(current_task)
+                # Cleanup
+                await self._cleanup_response(message, current_task)
+
+    async def _update_message_reactions(self, message: Message) -> None:
+        """Update message reactions at the start of processing.
+
+        Args:
+            message: The message to update reactions for
+        """
+        # Add typing reaction
+        await message.add_reaction("⌨️")
+        # Remove the thinking reaction
+        try:
+            await message.remove_reaction("💭", self.bot_user)
+        except:
+            # Reaction might not exist, that's okay
+            pass
+
+    async def _handle_tool_call_message(
+        self,
+        message: Message,
+        line: str,
+        first_message: bool,
+    ) -> None:
+        """Handle a tool call message.
+
+        Args:
+            message: The message to respond to
+            line: The tool call line
+            first_message: Whether this is the first message
+        """
+        logger.info(f"Processing tool call: {line}")
+        try:
+            # Parse the tool call data
+            tool_data = json.loads(line)
+            tool_name = tool_data.get("name", "unknown")
+            tool_args = tool_data.get("args", {})
+
+            logger.info(f"Tool call data: name={tool_name}, args={tool_args}")
+
+            # Send a message indicating tool usage
+            status = f"-# 🔧 Using tool: `{tool_name}`..."
+            if first_message:
+                await message.reply(status)
+            else:
+                await message.channel.send(status)
+
+        except Exception as e:
+            logger.warning(f"Failed to process tool call: {str(e)}")
+            logger.exception(e)
+
+    async def _handle_complete_message(
+        self,
+        message: Message,
+        line: str,
+        first_message: bool,
+        line_count: int,
+    ) -> None:
+        """Handle a complete message.
+
+        Args:
+            message: The message to respond to
+            line: The message line
+            first_message: Whether this is the first message
+            line_count: The current line count
+        """
+        logger.info(f"Sending line: {line}")
+        try:
+            if first_message:
+                # First message should be a reply
+                await message.reply(line)
+            else:
+                await message.channel.send(line)
+
+        except Exception as e:
+            logger.warning(f"Failed to send message chunk: {str(e)}")
+
+    async def _cleanup_response(
+        self,
+        message: Message,
+        current_task: asyncio.Task[None],
+    ) -> None:
+        """Clean up after response processing.
+
+        Args:
+            message: The message that was processed
+            current_task: The current task
+        """
+        # Remove the typing reaction
+        try:
+            await message.remove_reaction("⌨️", self.bot_user)
+        except:
+            # Reaction might not exist, that's okay
+            pass
+        # Remove this task from the shutup set
+        self.shutup_tasks.discard(current_task)
 
     def add_to_queue(
         self,
