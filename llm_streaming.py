@@ -1,6 +1,7 @@
 """LLM streaming response handling."""
 
 import asyncio
+import datetime
 import json
 import logging
 from enum import Enum
@@ -57,6 +58,8 @@ class LLMResponseHandler:
         self.response_tasks: Dict[int, Optional[asyncio.Task[None]]] = {}
         self.shutup_tasks: Set[asyncio.Task[None]] = set()
         self.tool_registry = tool_registry
+        # Dictionary to store reminder metadata keyed by message ID
+        self.reminder_metadata: Dict[int, Dict[str, Any]] = {}
 
     async def _process_content_chunk(
         self,
@@ -492,6 +495,9 @@ class LLMResponseHandler:
                     message_history, message.channel, message
                 )
 
+                # Inject reminder context if this is a reminder
+                context = self._inject_reminder_context(context, message)
+
                 # Process the response
                 first_message = True
                 line_count = 0
@@ -588,6 +594,15 @@ class LLMResponseHandler:
         except:
             # Reaction might not exist, that's okay
             pass
+
+        # Clean up any reminder metadata that might still exist
+        try:
+            if message.id in self.reminder_metadata:
+                del self.reminder_metadata[message.id]
+                logger.info(f"Cleaned up reminder metadata for message {message.id}")
+        except Exception as e:
+            logger.warning(f"Error cleaning up reminder metadata: {str(e)}")
+
         # Remove this task from the shutup set
         self.shutup_tasks.discard(current_task)
 
@@ -606,6 +621,116 @@ class LLMResponseHandler:
             self.response_queues[channel_id] = asyncio.Queue()
         self.response_queues[channel_id].put_nowait(message)
 
+    def add_reminder_to_queue(
+        self,
+        channel_id: int,
+        original_message: Message,
+        reminder_content: str,
+    ) -> None:
+        """Add a reminder to the response queue with special context.
+
+        This method adds the original message to the queue and stores
+        reminder metadata separately, keyed by the message ID.
+
+        Args:
+            channel_id: The Discord channel ID
+            original_message: The original message that set the reminder
+            reminder_content: The content of the reminder
+        """
+        if channel_id not in self.response_queues:
+            self.response_queues[channel_id] = asyncio.Queue()
+
+        # Store reminder metadata in our dictionary
+        self.reminder_metadata[original_message.id] = {
+            "is_reminder": True,
+            "content": reminder_content,
+            "triggered_at": datetime.datetime.now().isoformat(),
+            "user_id": original_message.author.id,
+            "user_name": original_message.author.display_name,
+        }
+
+        # Add to queue
+        self.response_queues[channel_id].put_nowait(original_message)
+        logger.info(f"Added reminder for message {original_message.id} to LLM queue")
+
+    def _inject_reminder_context(
+        self,
+        context: List[LLMMessage],
+        message: Message,
+    ) -> List[LLMMessage]:
+        """Inject reminder context into the message list.
+
+        This adds a tool call and response pair to the context to indicate
+        that a reminder has been triggered, which helps the LLM understand
+        how to respond appropriately.
+
+        Args:
+            context: The existing context list
+            message: The message with reminder metadata
+
+        Returns:
+            The updated context list with reminder information
+        """
+        # Check if this message has reminder metadata
+        reminder_metadata = self.reminder_metadata.get(message.id)
+        if not reminder_metadata:
+            return context
+
+        # Get reminder details
+        reminder_content = reminder_metadata.get("content", "")
+        triggered_at = reminder_metadata.get(
+            "triggered_at", datetime.datetime.now().isoformat()
+        )
+
+        # Create a tool call message for the reminder
+        tool_name = "schedule_reminder"
+        tool_args = {
+            "content": reminder_content,
+            "time": triggered_at,
+        }
+
+        # Add tool call to context
+        tool_call_message = LLMMessage(
+            role="assistant",
+            content="",  # Empty content for tool calls
+            tool_calls=[
+                LLMMessage.ToolCall(
+                    function=LLMMessage.ToolCall.Function(
+                        name=tool_name,
+                        arguments=tool_args,
+                    ),
+                ),
+            ],
+        )
+        context.append(tool_call_message)
+        logger.info(f"Added reminder tool call to context: {tool_call_message}")
+
+        # Create tool response message
+        tool_response = "\n".join(
+            [
+                f"I'll remind you about '{reminder_content}' at {triggered_at}.",
+                f"Waiting until {triggered_at} ...",
+                f"Waiting complete. The time is now {triggered_at}.",
+                f"Reminder triggered. You should now respond to the user's original message, to inform them that it is now time to '{reminder_content}'.",
+            ]
+        )
+
+        # Add response to context
+        response_message = self._create_tool_response_message(tool_response)
+        context.append(response_message)
+        logger.info(f"Added reminder tool response to context: {response_message}")
+
+        # Clean up the metadata after using it
+        try:
+            del self.reminder_metadata[message.id]
+        except KeyError:
+            # The metadata might have already been removed
+            logger.warning(
+                f"Reminder metadata for message {message.id} already removed"
+            )
+
+        return context
+
     def stop_responses(self, channel_id: int) -> None:
         """Stop all responses in a channel.
 
@@ -620,10 +745,26 @@ class LLMResponseHandler:
             task.cancel()
             self.response_tasks[channel_id] = None
 
-        # Clear the response queue
+        # Clear the response queue and clean up any associated reminder metadata
         if channel_id in self.response_queues:
+            # Get all messages in the queue and clean up their metadata
+            messages_to_clean: List[Message] = []
             while not self.response_queues[channel_id].empty():
                 try:
-                    self.response_queues[channel_id].get_nowait()
+                    message = self.response_queues[channel_id].get_nowait()
+                    messages_to_clean.append(message)
                 except asyncio.QueueEmpty:
                     break
+
+            # Clean up reminder metadata for all messages
+            for message in messages_to_clean:
+                try:
+                    if message.id in self.reminder_metadata:
+                        del self.reminder_metadata[message.id]
+                        logger.info(
+                            f"Cleaned up reminder metadata for message {message.id} during stop"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Error cleaning up reminder metadata during stop: {str(e)}"
+                    )

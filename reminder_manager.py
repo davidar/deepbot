@@ -190,16 +190,11 @@ class ReminderManager:
 
             # Process the reminder
             if self.llm_handler and original_message:
-                # Send a notification message as a reply to the original message
-                notification = f"{user.mention if user else f'<@{user_id}>'} Here's your reminder about: {content}"
-                notification_message = await original_message.reply(notification)
-
-                # Add the notification message to the LLM queue
-                # The context builder will automatically include the original message in the context
-                self.llm_handler.add_to_queue(channel_id, notification_message)
-                logger.info(
-                    f"Added reminder notification for {reminder_id} to LLM queue"
+                # Add the original message directly to the LLM queue with reminder context
+                self.llm_handler.add_reminder_to_queue(
+                    channel_id, original_message, content
                 )
+                logger.info(f"Added reminder {reminder_id} to LLM queue with context")
             else:
                 # Fallback if we don't have the original message or LLM handler
                 logger.warning(f"Using fallback for reminder {reminder_id}")
