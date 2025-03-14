@@ -1,6 +1,5 @@
 """Tools for the bot to use in responses."""
 
-import json
 import logging
 import random
 from typing import Any, Dict, List, Optional
@@ -114,12 +113,7 @@ class ToolRegistry:
             )
         except (ValueError, TypeError) as e:
             logger.error(f"Error converting parameters to integers: {str(e)}")
-            error_response = json.dumps(
-                {
-                    "error": "Dice and sides must be integers",
-                    "discord_message": "-# 🎲 Error: Dice and sides must be integers",
-                }
-            )
+            error_response = "Error: Dice and sides must be integers"
             logger.info(f"Returning error response: {error_response}")
             return error_response
 
@@ -145,30 +139,11 @@ class ToolRegistry:
         total = sum(rolls)
         logger.info(f"Rolled: {rolls}, total: {total}")
 
-        # Format rolls for display
-        if len(rolls) > 10:
-            # If there are too many rolls, just show the first few and the count
-            display_rolls = f"{rolls[:10]} + {len(rolls) - 10} more"
-        else:
-            display_rolls = str(rolls)
-
-        # Create response
-        discord_message = (
-            f"-# 🎲 Rolled {num_dice}d{num_sides}: {display_rolls} = {total}"
-        )
-
-        response = {
-            "dice": num_dice,
-            "sides": num_sides,
-            "rolls": rolls,
-            "total": total,
-            "discord_message": discord_message,
-        }
-
+        # Create a human-readable response
+        response = f"Rolled {num_dice}d{num_sides}: {rolls} = {total}"
         logger.info(f"Dice roll response: {response}")
-        response_json = json.dumps(response)
-        logger.info(f"Serialized response: {response_json}")
-        return response_json
+
+        return response
 
 
 # Create a global instance of the tool registry

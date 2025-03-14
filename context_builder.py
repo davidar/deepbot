@@ -2,7 +2,7 @@
 
 import datetime
 import logging
-from typing import TYPE_CHECKING, List, Literal, Optional, TypedDict
+from typing import TYPE_CHECKING, List, Literal, Optional, Sequence, TypedDict
 
 from discord import Message
 from discord.ext import commands
@@ -12,6 +12,7 @@ import config
 import example_conversation
 from reactions import ReactionManager
 from system_prompt import load_system_prompt
+from tool_messages import is_tool_message, parse_repl_tool_message
 from utils import clean_message_content, get_server_name
 
 if TYPE_CHECKING:
@@ -22,9 +23,10 @@ if TYPE_CHECKING:
 class _GroupedMessage(TypedDict):
     """Internal type for message grouping that extends LLMMessage."""
 
-    role: Literal["system", "assistant", "user"]
+    role: Literal["system", "assistant", "user", "tool"]
     content: str
     author_id: int
+    tool_calls: Optional[Sequence[LLMMessage.ToolCall]]
 
 
 # Set up logging
@@ -142,9 +144,68 @@ class ContextBuilder:
         # Clean up mentions and format content
         content = clean_message_content(message)
 
-        # Skip empty messages and automated bot messages
-        if not content or (message.author.bot and self.is_automated_message(content)):
+        # Skip empty messages
+        if not content:
             return None
+
+        # Handle automated bot messages
+        if message.author.bot:
+            # Check if this is a Python REPL-style tool message
+            if is_tool_message(content):
+                try:
+                    # Use the parsing function for REPL-style messages
+                    result = parse_repl_tool_message(content)
+                    if result:
+                        tool_name, tool_args, response_data = result
+
+                        # First create a tool call message
+                        tool_call_message = _GroupedMessage(
+                            role="assistant",
+                            content="",  # Empty content for tool calls
+                            author_id=message.author.id,
+                            tool_calls=[
+                                LLMMessage.ToolCall(
+                                    function=LLMMessage.ToolCall.Function(
+                                        name=tool_name,
+                                        arguments=tool_args,
+                                    ),
+                                ),
+                            ],
+                        )
+
+                        # Then create a tool response message
+                        tool_response_message = _GroupedMessage(
+                            role="tool",
+                            content=response_data,
+                            author_id=message.author.id,
+                            tool_calls=None,
+                        )
+
+                        # Return the tool call message (the response will be handled separately)
+                        # We're using a special attribute to indicate this is part of a combined message
+                        tool_call_message["_has_response"] = tool_response_message  # type: ignore
+                        return tool_call_message
+                    else:
+                        # If parsing fails, treat as a regular message
+                        return _GroupedMessage(
+                            role="assistant",
+                            content=content,
+                            author_id=message.author.id,
+                            tool_calls=None,
+                        )
+                except Exception as e:
+                    logger.warning(f"Error parsing REPL tool message: {str(e)}")
+                    # Fallback to treating as a regular message
+                    return _GroupedMessage(
+                        role="assistant",
+                        content=content,
+                        author_id=message.author.id,
+                        tool_calls=None,
+                    )
+
+            # Skip automated messages
+            elif self.is_automated_message(content):
+                return None
 
         # Add username prefix if not a bot
         if not message.author.bot:
@@ -171,6 +232,7 @@ class ContextBuilder:
             role="assistant" if message.author.bot else "user",
             content=content,
             author_id=message.author.id,
+            tool_calls=None,
         )
 
     def get_system_prompt(self, channel: "MessageableChannel") -> LLMMessage:
@@ -248,13 +310,33 @@ class ContextBuilder:
 
         # Group adjacent messages from the same author
         current_group: Optional[_GroupedMessage] = None
-        grouped_messages: List[LLMMessage] = []
+        grouped_messages: List[_GroupedMessage] = []
 
         for message in messages:
             formatted = self._format_message(message)
             if formatted is None or not self._should_include_message(
                 message, reference_message
             ):
+                continue
+
+            # Handle special case for combined tool call and response messages
+            if "_has_response" in formatted:
+                # Add the tool call message
+                grouped_messages.append(formatted)
+                # Add the tool response message that's stored in _has_response
+                grouped_messages.append(formatted["_has_response"])  # type: ignore
+                # Reset current group
+                current_group = None
+                continue
+
+            # Special handling for tool messages and tool calls
+            if formatted["role"] == "tool" or (
+                formatted["role"] == "assistant" and "tool_calls" in formatted
+            ):
+                # Tool messages and tool calls should be kept separate, not grouped
+                grouped_messages.append(formatted)
+                # Reset current group to ensure tool messages aren't grouped with other messages
+                current_group = None
                 continue
 
             if current_group is None:
@@ -264,51 +346,62 @@ class ContextBuilder:
                 and formatted["role"] == "assistant"
                 and current_group["author_id"] == formatted["author_id"]
             ):
-                # Add to current group only for assistant messages
+                # Add to current group for regular assistant messages from the same author
                 current_group["content"] += f"\n\n{formatted['content']}"
             else:
                 # Different author/role or user message, add the current group and start a new one
-                grouped_messages.append(
-                    LLMMessage(
-                        role=current_group["role"],
-                        content=current_group["content"],
-                    )
-                )
+                grouped_messages.append(current_group)
                 current_group = formatted
 
         # Add the last group if it exists
         if current_group is not None:
-            grouped_messages.append(
-                LLMMessage(
-                    role=current_group["role"],
-                    content=current_group["content"],
-                )
-            )
+            grouped_messages.append(current_group)
 
         # Get max_history from model options and apply limit to final context
         max_history = config.load_model_options()["max_history"]
-        context = (
-            [self.get_system_prompt(channel)]
-            + example_conversation.load_example_conversation()
-            + [
-                LLMMessage(
-                    role="system",
-                    content="The messages above are a distant memory. You recall them, but they are not part of your current conversation.",
-                )
-            ]
-            + grouped_messages[-max_history:]
+
+        # Create the context
+        context: List[LLMMessage] = []
+
+        # Add system prompt
+        context.append(self.get_system_prompt(channel))
+
+        # Add example conversation
+        context.extend(example_conversation.load_example_conversation())
+
+        # Add separator message
+        context.append(
+            LLMMessage(
+                role="system",
+                content="The messages above are a distant memory. You recall them, but they are not part of your current conversation.",
+            )
         )
 
+        # Add conversation history
+        for msg in grouped_messages[-max_history:]:
+            context.append(
+                LLMMessage(
+                    role=msg["role"],
+                    content=msg["content"],
+                    tool_calls=msg["tool_calls"],
+                )
+            )
+
+        # Add reference message if present
         if reference_message:
             formatted_reference_message = self._format_message(reference_message)
             if formatted_reference_message is None:
                 raise ValueError("Unable to format reference message")
+
+            # Add system message
             context.append(
                 LLMMessage(
                     role="system",
-                    content=f"The messages above provide context for the conversation. Respond to the message below.",
+                    content="The messages above provide context for the conversation. Respond to the message below.",
                 )
             )
+
+            # Add reference message
             context.append(
                 LLMMessage(
                     role=formatted_reference_message["role"],

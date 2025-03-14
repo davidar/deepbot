@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
 from enum import Enum
 from typing import (
     Any,
@@ -24,34 +23,11 @@ from ollama import Message as LLMMessage
 
 import config
 from context_builder import ContextBuilder
+from tool_messages import format_tool_call_and_response
 from tools import tool_registry
 
 # Set up logging
 logger = logging.getLogger("deepbot.llm")
-
-
-@dataclass
-class ToolCall:
-    """A tool call from the LLM."""
-
-    id: str
-    type: str
-    function: Dict[str, Any]
-
-
-@dataclass
-class ChunkMessage:
-    """A message chunk from the LLM."""
-
-    content: Optional[str] = None
-    tool_calls: Optional[List[ToolCall]] = None
-
-
-@dataclass
-class Chunk:
-    """A chunk from the LLM stream."""
-
-    message: ChunkMessage
 
 
 class LineStatus(Enum):
@@ -59,7 +35,7 @@ class LineStatus(Enum):
 
     ACCUMULATING = "accumulating"  # Line is still being built
     COMPLETE = "complete"  # Line is complete and ready to send
-    TOOL_CALL = "tool_call"  # Line is a tool call
+    # TOOL_CALL = "tool_call"  # Line is a tool call
 
     def __str__(self) -> str:
         return self.value
@@ -149,6 +125,9 @@ class LLMResponseHandler:
         Returns:
             The tool response message
         """
+        # The Ollama API expects tool responses to have the role "tool"
+        # The content should be the raw response string, not a JSON object
+        # This will be sent directly to the API
         return LLMMessage(role="tool", content=response)
 
     async def _handle_tool_response(
@@ -181,12 +160,27 @@ class LLMResponseHandler:
             tool_response = handler(tool_args)
             logger.info(f"Tool response: {tool_response}")
 
-            # Parse the response
-            tool_response_data = json.loads(tool_response)
+            # Format the tool call and response in a Python REPL code block
+            combined_message = format_tool_call_and_response(
+                tool_name, tool_args, tool_response
+            )
+            await message.channel.send(combined_message)
 
-            # Send the discord message if present
-            if "discord_message" in tool_response_data:
-                await message.channel.send(tool_response_data["discord_message"])
+            # Add tool call to context first
+            tool_call_message = LLMMessage(
+                role="assistant",
+                content="",  # Empty content for tool calls
+                tool_calls=[
+                    LLMMessage.ToolCall(
+                        function=LLMMessage.ToolCall.Function(
+                            name=tool_name,
+                            arguments=tool_args,
+                        ),
+                    ),
+                ],
+            )
+            context.append(tool_call_message)
+            logger.info(f"Added tool call to context: {tool_call_message}")
 
             # Add response to context
             response_message = self._create_tool_response_message(tool_response)
@@ -259,7 +253,7 @@ class LLMResponseHandler:
         try:
             # Create and yield tool call data
             tool_data = self._create_tool_call_data(tool_call)
-            yield (LineStatus.TOOL_CALL, json.dumps(tool_data))
+            # yield (LineStatus.TOOL_CALL, json.dumps(tool_data))
 
             # Handle tool response
             async for status, content in self._handle_tool_response(
@@ -389,7 +383,7 @@ class LLMResponseHandler:
                 f"Starting streaming response with {len(context)} context messages"
             )
             logger.info(
-                f"Context: {json.dumps([{'role': m.role, 'content': m.content} for m in context], indent=2)}"
+                f"Context: {json.dumps([{'role': m.role, 'content': m.content, 'tool_calls': m.tool_calls} for m in context], indent=2)}"
             )
 
             # Get tools
@@ -516,12 +510,6 @@ class LLMResponseHandler:
                         # Start typing indicator
                         async with message.channel.typing():
                             pass
-                    elif status == LineStatus.TOOL_CALL:
-                        await self._handle_tool_call_message(
-                            message, line, first_message
-                        )
-                        first_message = False
-                        line_count += 1
                     elif status == LineStatus.COMPLETE and line.strip():
                         await self._handle_complete_message(
                             message, line, first_message, line_count
@@ -559,39 +547,6 @@ class LLMResponseHandler:
         except:
             # Reaction might not exist, that's okay
             pass
-
-    async def _handle_tool_call_message(
-        self,
-        message: Message,
-        line: str,
-        first_message: bool,
-    ) -> None:
-        """Handle a tool call message.
-
-        Args:
-            message: The message to respond to
-            line: The tool call line
-            first_message: Whether this is the first message
-        """
-        logger.info(f"Processing tool call: {line}")
-        try:
-            # Parse the tool call data
-            tool_data = json.loads(line)
-            tool_name = tool_data.get("name", "unknown")
-            tool_args = tool_data.get("args", {})
-
-            logger.info(f"Tool call data: name={tool_name}, args={tool_args}")
-
-            # Send a message indicating tool usage
-            status = f"-# 🔧 Using tool: `{tool_name}`..."
-            if first_message:
-                await message.reply(status)
-            else:
-                await message.channel.send(status)
-
-        except Exception as e:
-            logger.warning(f"Failed to process tool call: {str(e)}")
-            logger.exception(e)
 
     async def _handle_complete_message(
         self,
