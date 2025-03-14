@@ -4,6 +4,8 @@ import logging
 import random
 from typing import Any, Dict, List, Optional, TypedDict
 
+from discord import Message
+
 
 class ToolExample(TypedDict):
     """Type for a tool usage example."""
@@ -73,16 +75,19 @@ class ToolRegistry:
         """
         return self.tools
 
-    def get_handler(self, name: str) -> Optional[Any]:
-        """Get the handler for a tool.
+    async def call_tool(self, name: str, args: Dict[str, Any], message: Message) -> str:
+        """Call a tool.
 
         Args:
             name: The name of the tool
-
-        Returns:
-            The handler function or None if not found
+            args: The arguments for the tool
         """
-        return self.handlers.get(name)
+        handler = self.handlers.get(name)
+        if not handler:
+            logger.warning(f"No handler found for tool: {name}")
+            return "Error: Tool not found"
+
+        return await handler(args, message)
 
     def get_examples(self, name: Optional[str] = None) -> Dict[str, List[ToolExample]]:
         """Get examples for a specific tool or all tools.
@@ -131,10 +136,36 @@ class ToolRegistry:
                 ),
             ],
         )
-
         logger.info("Registered dice_roll tool")
 
-    def _handle_dice_roll_tool(self, args: Dict[str, Any]) -> str:
+        # Discord reaction tool
+        self.register_tool(
+            name="discord_reaction",
+            description="Add a reaction emoji to the Discord message being replied to",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "emoji": {
+                        "type": "string",
+                        "description": "The emoji to react with. Can be a Unicode emoji or a Discord custom emoji ID/name.",
+                    }
+                },
+                "required": ["emoji"],
+            },
+            handler=self._handle_discord_reaction_tool,
+            examples=[
+                ToolExample(
+                    user_query="Please react with a thumbs up to my message",
+                    tool_args={"emoji": "👍"},
+                    response="Added reaction 👍 to the message",
+                ),
+            ],
+        )
+        logger.info("Registered discord_reaction tool")
+
+    async def _handle_dice_roll_tool(
+        self, args: Dict[str, Any], message: Message
+    ) -> str:
         """Handle dice roll tool calls.
 
         Args:
@@ -191,6 +222,53 @@ class ToolRegistry:
         logger.info(f"Dice roll response: {response}")
 
         return response
+
+    async def _handle_discord_reaction_tool(
+        self, args: Dict[str, Any], message: Message
+    ) -> str:
+        """Handle Discord reaction tool calls.
+
+        This function adds a reaction to the Discord message being replied to.
+
+        Args:
+            args: The tool arguments containing the emoji to react with
+
+        Returns:
+            A confirmation message indicating the reaction was added
+        """
+        logger.info(f"Handling Discord reaction with args: {args}")
+
+        # Extract emoji from args
+        emoji = args.get("emoji", "")
+
+        if not emoji:
+            error_response = "Error: No emoji specified for reaction"
+            logger.error(error_response)
+            return error_response
+
+        logger.info(f"Adding reaction with emoji: {emoji}")
+
+        # Process custom emoji format if needed
+        # Discord custom emojis can be in formats like:
+        # - <:emoji_name:emoji_id>
+        # - emoji_name:emoji_id
+        if ":" in emoji and not emoji.startswith("<"):
+            # If it's a custom emoji without proper formatting, add the brackets
+            emoji = f"<:{emoji}>"
+            logger.info(f"Formatted custom emoji: {emoji}")
+
+        # Add the reaction
+        try:
+            await message.add_reaction(emoji)
+            logger.info(f"Successfully added reaction {emoji} to message {message.id}")
+            response = f"Added reaction {emoji} to the message"
+            logger.info(f"Discord reaction response: {response}")
+            return response
+
+        except Exception as e:
+            error_response = f"Error adding reaction: {str(e)}"
+            logger.error(error_response)
+            return error_response
 
 
 # Create a global instance of the tool registry

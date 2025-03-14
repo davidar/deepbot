@@ -150,14 +150,11 @@ class LLMResponseHandler:
         Yields:
             Status and content pairs from the new stream
         """
-        handler = self.tool_registry.get_handler(tool_name)
-        if not handler:
-            logger.warning(f"No handler found for tool: {tool_name}")
-            return
-
         try:
             # Get and log tool response
-            tool_response = handler(tool_args)
+            tool_response = await self.tool_registry.call_tool(
+                tool_name, tool_args, message
+            )
             logger.info(f"Tool response: {tool_response}")
 
             # Format the tool call and response in a Python REPL code block
