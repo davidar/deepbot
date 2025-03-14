@@ -2,7 +2,16 @@
 
 import logging
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
+
+
+class ToolExample(TypedDict):
+    """Type for a tool usage example."""
+
+    user_query: str
+    tool_args: Dict[str, Any]
+    response: str
+
 
 # Set up logging
 logger = logging.getLogger("deepbot.tools")
@@ -15,12 +24,18 @@ class ToolRegistry:
         """Initialize the tool registry."""
         self.tools: List[Dict[str, Any]] = []
         self.handlers: Dict[str, Any] = {}
+        self.examples: Dict[str, List[ToolExample]] = {}
 
         # Register default tools
         self.register_default_tools()
 
     def register_tool(
-        self, name: str, description: str, parameters: Dict[str, Any], handler: Any
+        self,
+        name: str,
+        description: str,
+        parameters: Dict[str, Any],
+        handler: Any,
+        examples: Optional[List[ToolExample]] = None,
     ) -> None:
         """Register a tool.
 
@@ -29,6 +44,7 @@ class ToolRegistry:
             description: The description of the tool
             parameters: The parameters for the tool
             handler: The function to handle tool calls
+            examples: Optional list of example usages, each containing 'user_query', 'tool_args', and 'response'
         """
         tool_def = {
             "type": "function",
@@ -41,6 +57,11 @@ class ToolRegistry:
 
         self.tools.append(tool_def)
         self.handlers[name] = handler
+
+        # Store examples if provided
+        if examples:
+            self.examples[name] = examples
+            logger.info(f"Registered {len(examples)} examples for tool: {name}")
 
         logger.info(f"Registered tool: {name}")
 
@@ -63,6 +84,19 @@ class ToolRegistry:
         """
         return self.handlers.get(name)
 
+    def get_examples(self, name: Optional[str] = None) -> Dict[str, List[ToolExample]]:
+        """Get examples for a specific tool or all tools.
+
+        Args:
+            name: Optional name of the tool to get examples for
+
+        Returns:
+            Dictionary of tool examples or examples for the specified tool
+        """
+        if name:
+            return {name: self.examples.get(name, [])} if name in self.examples else {}
+        return self.examples
+
     def register_default_tools(self) -> None:
         """Register default tools."""
         # Dice roll tool
@@ -84,6 +118,18 @@ class ToolRegistry:
                 "required": ["dice", "sides"],
             },
             handler=self._handle_dice_roll_tool,
+            examples=[
+                ToolExample(
+                    user_query="Can you roll a pair of dice for me?",
+                    tool_args={"dice": 2, "sides": 6},
+                    response="Rolled 2d6: [3, 5] = 8",
+                ),
+                ToolExample(
+                    user_query="Roll a d20 for my attack roll",
+                    tool_args={"dice": 1, "sides": 20},
+                    response="Rolled 1d20: [18] = 18",
+                ),
+            ],
         )
 
         logger.info("Registered dice_roll tool")
@@ -99,6 +145,7 @@ class ToolRegistry:
         """
         logger.info(f"Handling dice roll with args: {args}")
 
+        # Extract dice and sides from args
         num_dice = args.get("dice", 1)
         num_sides = args.get("sides", 6)
 

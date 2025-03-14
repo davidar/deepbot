@@ -7,6 +7,8 @@ from typing import List, Optional, Tuple
 
 from ollama import Message as LLMMessage
 
+from tools import tool_registry
+
 # File to store the example conversation
 EXAMPLE_CONVERSATION_FILE = "example_conversation.json"
 
@@ -31,6 +33,35 @@ def load_example_conversation() -> List[LLMMessage]:
                 messages.append(LLMMessage(role="user", content=pair["user"]))
                 messages.append(LLMMessage(role="assistant", content=pair["assistant"]))
             logger.debug(f"Loaded {len(messages)} messages from example conversation")
+
+            # Append tool examples from the registry
+            tool_examples = tool_registry.get_examples()
+            for tool_name, examples in tool_examples.items():
+                for example in examples:
+                    messages.append(
+                        LLMMessage(role="user", content=example["user_query"])
+                    )
+                    messages.append(
+                        LLMMessage(
+                            role="assistant",
+                            tool_calls=[
+                                LLMMessage.ToolCall(
+                                    function=LLMMessage.ToolCall.Function(
+                                        name=tool_name,
+                                        arguments=example["tool_args"],
+                                    )
+                                )
+                            ],
+                        )
+                    )
+                    messages.append(
+                        LLMMessage(role="tool", content=example["response"])
+                    )
+
+            logger.debug(
+                f"Added tool examples from {len(tool_examples)} tools to conversation"
+            )
+
             return messages
     except Exception as e:
         logger.error(f"Error loading example conversation: {e}")

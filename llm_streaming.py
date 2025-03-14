@@ -383,7 +383,7 @@ class LLMResponseHandler:
                 f"Starting streaming response with {len(context)} context messages"
             )
             logger.info(
-                f"Context: {json.dumps([{'role': m.role, 'content': m.content, 'tool_calls': m.tool_calls} for m in context], indent=2)}"
+                f"Context: {json.dumps([m.model_dump(exclude_none=True) for m in context], indent=2)}"
             )
 
             # Get tools

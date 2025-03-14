@@ -17,15 +17,14 @@ from message_history import MessageHistoryManager
 from reactions import ReactionManager
 from user_management import UserManager
 
-Bot = commands.Bot
-Context = commands.Context
+Context = commands.Context[commands.Bot]
 
 # Set up logging
 logger = logging.getLogger("deepbot.commands")
 
 
 def setup_commands(
-    bot: Bot,
+    bot: commands.Bot,
     message_history: MessageHistoryManager,
     context_builder: ContextBuilder,
     llm_handler: LLMResponseHandler,
@@ -45,7 +44,7 @@ def setup_commands(
 
     @bot.command(name="options")
     async def options_command(
-        ctx: Context[Bot],
+        ctx: Context,
         action: Optional[str] = None,
         option_name: Optional[str] = None,
         *,  # Force remaining args to be keyword-only
@@ -117,7 +116,7 @@ def setup_commands(
         )
 
     @bot.command(name="refresh")
-    async def refresh_history(ctx: Context[Bot]) -> None:
+    async def refresh_history(ctx: Context) -> None:
         """Refresh the conversation history by fetching recent messages from the channel."""
         if not isinstance(ctx.channel, discord.TextChannel):
             await ctx.send(
@@ -140,7 +139,7 @@ def setup_commands(
             await ctx.send(f"-# Error refreshing history: {str(e)}")
 
     @bot.command(name="raw")
-    async def raw_history(ctx: Context[Bot]) -> None:
+    async def raw_history(ctx: Context) -> None:
         """Display the raw conversation history for debugging."""
         channel_id = ctx.channel.id
         if not message_history.has_history(channel_id):
@@ -153,13 +152,7 @@ def setup_commands(
 
         # Convert to JSON
         json_data = json.dumps(
-            [
-                {
-                    "role": msg.role,
-                    "content": msg.content,
-                }
-                for msg in context
-            ],
+            [msg.model_dump(exclude_none=True) for msg in context],
             indent=2,
         )
 
@@ -174,7 +167,7 @@ def setup_commands(
 
     @bot.command(name="prompt")
     async def prompt_command(
-        ctx: Context[Bot],
+        ctx: Context,
         action: Optional[str] = None,
         *,
         line: Optional[str] = None,
@@ -250,7 +243,7 @@ def setup_commands(
 
     @bot.command(name="example")
     async def example_command(
-        ctx: Context[Bot],
+        ctx: Context,
         action: Optional[str] = None,
         *,
         content: Optional[str] = None,
@@ -398,14 +391,14 @@ def setup_commands(
         )
 
     @bot.command(name="shutup")
-    async def shutup_command(ctx: Context[Bot]) -> None:
+    async def shutup_command(ctx: Context) -> None:
         """Stop all responses in the current channel."""
         channel_id = ctx.channel.id
         llm_handler.stop_responses(channel_id)
         await ctx.send("-# 🤫 Stopped all responses in this channel")
 
     @bot.command(name="reactions")
-    async def reactions_command(ctx: Context[Bot], scope: str = "channel") -> None:
+    async def reactions_command(ctx: Context, scope: str = "channel") -> None:
         """Display reaction statistics for the bot's messages.
 
         Args:
@@ -455,7 +448,7 @@ def setup_commands(
             await ctx.send("\n".join(message))
 
     @bot.command(name="wipe")
-    async def wipe_command(ctx: Context[Bot]) -> None:
+    async def wipe_command(ctx: Context) -> None:
         """Wipe the conversation history to only include messages from this point forward."""
         if not isinstance(ctx.channel, discord.TextChannel):
             await ctx.send(
@@ -470,7 +463,7 @@ def setup_commands(
         )
 
     @bot.command(name="unwipe")
-    async def unwipe_command(ctx: Context[Bot]) -> None:
+    async def unwipe_command(ctx: Context) -> None:
         """Restore access to all conversation history by removing the wipe point."""
         if not isinstance(ctx.channel, discord.TextChannel):
             await ctx.send(
@@ -485,7 +478,7 @@ def setup_commands(
         )
 
     @bot.command(name="ignore")
-    async def ignore_command(ctx: Context[Bot], member: discord.Member) -> None:
+    async def ignore_command(ctx: Context, member: discord.Member) -> None:
         """Ignore messages from a user.
 
         Args:
@@ -495,7 +488,7 @@ def setup_commands(
         await ctx.send(f"-# Now ignoring messages from {member.display_name}")
 
     @bot.command(name="unignore")
-    async def unignore_command(ctx: Context[Bot], member: discord.Member) -> None:
+    async def unignore_command(ctx: Context, member: discord.Member) -> None:
         """Stop ignoring messages from a user.
 
         Args:
@@ -506,7 +499,7 @@ def setup_commands(
 
     @bot.command(name="limit")
     async def limit_command(
-        ctx: Context[Bot],
+        ctx: Context,
         member: discord.Member,
         consecutive_limit: Optional[int] = None,
     ) -> None:
@@ -528,7 +521,7 @@ def setup_commands(
             await ctx.send(f"-# Error: {str(e)}")
 
     @bot.command(name="restrictions")
-    async def restrictions_command(ctx: Context[Bot], member: discord.Member) -> None:
+    async def restrictions_command(ctx: Context, member: discord.Member) -> None:
         """View current restrictions for a user.
 
         Args:
@@ -555,7 +548,7 @@ def setup_commands(
 
     # Add custom command error handler
     @bot.event
-    async def on_command_error(ctx: Context[Bot], error: Exception) -> None:
+    async def on_command_error(ctx: Context, error: Exception) -> None:
         """Handle command errors."""
         if isinstance(error, commands.CommandNotFound):
             # This is handled in on_message, so we can ignore it here
