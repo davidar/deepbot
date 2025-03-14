@@ -24,7 +24,7 @@ from ollama import Message as LLMMessage
 import config
 from context_builder import ContextBuilder
 from tool_messages import format_tool_call_and_response
-from tools import tool_registry
+from tools import ToolDefinition, tool_registry
 
 # Set up logging
 logger = logging.getLogger("deepbot.llm")
@@ -135,7 +135,7 @@ class LLMResponseHandler:
         tool_name: str,
         tool_args: Dict[str, Any],
         context: List[LLMMessage],
-        tools: List[Dict[str, Any]],
+        tools: List[ToolDefinition],
         message: Message,
     ) -> AsyncGenerator[Tuple[LineStatus, str], None]:
         """Handle a tool response and generate a new stream.
@@ -201,7 +201,7 @@ class LLMResponseHandler:
     async def _create_chat_stream(
         self,
         context: List[LLMMessage],
-        tools: List[Dict[str, Any]],
+        tools: List[ToolDefinition],
     ) -> Iterator[ChatResponse]:
         """Create a new chat stream.
 
@@ -226,7 +226,7 @@ class LLMResponseHandler:
         self,
         tool_call: Any,
         context: List[LLMMessage],
-        tools: List[Dict[str, Any]],
+        tools: List[ToolDefinition],
         current_line: str,
         has_non_whitespace: bool,
         message: Message,
@@ -269,7 +269,7 @@ class LLMResponseHandler:
         self,
         chunk: ChatResponse,
         context: List[LLMMessage],
-        tools: List[Dict[str, Any]],
+        tools: List[ToolDefinition],
         current_line: str,
         has_non_whitespace: bool,
         message: Message,
@@ -309,7 +309,7 @@ class LLMResponseHandler:
         self,
         stream: Iterator[ChatResponse],
         context: List[LLMMessage],
-        tools: List[Dict[str, Any]],
+        tools: List[ToolDefinition],
         message: Message,
         current_line: str = "",
         has_non_whitespace: bool = False,
