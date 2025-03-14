@@ -4,7 +4,7 @@ import logging
 
 import discord
 import ollama
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import config
 from commands import setup_commands
@@ -12,6 +12,7 @@ from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
 from message_history import MessageHistoryManager
 from reactions import ReactionManager
+from reminder_manager import reminder_manager
 from tools import tool_registry
 from user_management import UserManager
 from utils import get_channel_name
@@ -55,6 +56,13 @@ class DeepBot(commands.Bot):
         self.llm_handler = LLMResponseHandler(self.api_client, self.user)
         self.user_manager = UserManager()
 
+        # Set the LLM handler for the reminder manager
+        reminder_manager.set_llm_handler(self.llm_handler)
+
+        # Start the reminder check task
+        self.check_reminders.start()
+        logger.info("Started reminder check task")
+
         # Log available tools
         logger.info(
             f"Available tools: {[tool['function']['name'] for tool in tool_registry.get_tools()]}"
@@ -75,6 +83,22 @@ class DeepBot(commands.Bot):
 
         logger.info("Bot components initialized")
 
+    @tasks.loop(minutes=1)
+    async def check_reminders(self) -> None:
+        """Check for due reminders and trigger them."""
+        try:
+            due_reminders = reminder_manager.get_due_reminders()
+            for reminder in due_reminders:
+                await reminder_manager.process_due_reminder(self, reminder)
+        except Exception as e:
+            logger.error(f"Error checking reminders: {str(e)}")
+
+    @check_reminders.before_loop
+    async def before_check_reminders(self) -> None:
+        """Wait until the bot is ready before starting the reminder check task."""
+        await self.wait_until_ready()
+        logger.info("Reminder check task is ready to start")
+
     async def on_ready(self) -> None:
         """Event triggered when the bot is ready."""
         if not self.user:
@@ -93,6 +117,16 @@ class DeepBot(commands.Bot):
             logger.info(f"Connected to {guild.name}")
 
         logger.info(f"Bot is ready!")
+
+    async def close(self) -> None:
+        """Close the bot and clean up resources."""
+        # Cancel the reminder check task if it's running
+        if self.check_reminders.is_running():
+            self.check_reminders.cancel()
+            logger.info("Cancelled reminder check task")
+
+        # Call the parent close method
+        await super().close()
 
     async def on_message(self, message: discord.Message) -> None:
         """Event triggered when a message is received."""

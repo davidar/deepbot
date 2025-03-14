@@ -6,6 +6,7 @@ system_prompt.txt
 reaction_data.json
 user_restrictions.json
 example_conversation.json
+reminders.json
 
 # Python
 __pycache__/
