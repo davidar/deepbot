@@ -1,10 +1,10 @@
 {
     "temperature": 0.7,
-    "max_tokens": -1,
     "top_p": 0.9,
     "presence_penalty": 0.0,
     "frequency_penalty": 0.0,
     "seed": -1,
+    "num_ctx": 32768,
     "max_history": 10,
     "history_fetch_limit": 200,
     "max_response_lines": 15,

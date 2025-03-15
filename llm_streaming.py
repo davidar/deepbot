@@ -221,7 +221,7 @@ class LLMResponseHandler:
             messages=context,
             stream=True,
             keep_alive=-1,
-            options=config.load_model_options(),
+            options=config.get_ollama_options(),
             tools=tools,
         )
 
