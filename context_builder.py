@@ -244,13 +244,6 @@ class ContextBuilder:
         Returns:
             System prompt message dict
         """
-        # Get reaction stats for the channel
-        # channel_id = channel.id
-        # message_reactions = self.reaction_manager.get_channel_stats(channel_id)
-        # reaction_summary = self.reaction_manager.format_reaction_summary(
-        #     message_reactions
-        # )
-
         # Format the complete prompt with server name, time and reactions
         server_name = get_server_name(channel)
         current_time = datetime.datetime.now().strftime("%A, %B %d, %Y")
@@ -262,27 +255,6 @@ class ContextBuilder:
         ]
 
         prompt.extend(load_system_prompt())
-
-        # Add tool information
-        prompt.extend(
-            [
-                "",
-                "You have access to the following tools that you can use when appropriate:",
-                "1. dice_roll - Use this to roll dice. Provide the number of dice and sides (e.g., for 2d20, use dice=2, sides=20)",
-                "",
-                "When a user asks for information that could be answered using one of these tools, use the appropriate tool rather than making up information.",
-                "",
-                "For dice rolls, use the dice_roll tool whenever someone wants to roll dice or generate random numbers within a range.",
-                "Examples of when to use dice_roll:",
-                '- "Roll a d20" → dice=1, sides=20',
-                '- "Roll 3d6" → dice=3, sides=6',
-                '- "Roll some dice" → dice=1, sides=6 (default to a standard die)',
-                '- "Give me a random number between 1 and 100" → dice=1, sides=100',
-            ]
-        )
-
-        # if reaction_summary and reaction_summary != "No reactions yet.":
-        #     prompt.append(f"\n# Channel Reactions:\n{reaction_summary}\n")
 
         return LLMMessage(
             role="system",
