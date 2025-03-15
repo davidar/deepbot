@@ -39,6 +39,45 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _format_timestamp(dt: Optional[datetime]) -> Optional[str]:
+    """Format a datetime into a consistent ISO format with Z timezone.
+
+    Args:
+        dt: datetime object to format, or None
+
+    Returns:
+        ISO format string with Z timezone, or None if input is None
+    """
+    if dt is None:
+        return None
+    # Convert to UTC, format with 3 decimal places for microseconds, and use Z suffix
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _parse_timestamp(timestamp_str: str) -> datetime:
+    """Parse an ISO format datetime string and ensure UTC timezone awareness.
+
+    Args:
+        timestamp_str: ISO format datetime string, with or without timezone info
+
+    Returns:
+        datetime object with UTC timezone
+    """
+    # Convert any timezone format to UTC
+    if timestamp_str.endswith("Z"):
+        # Remove Z and add UTC timezone
+        dt = datetime.fromisoformat(timestamp_str[:-1])
+        return dt.replace(tzinfo=timezone.utc)
+    elif "+" in timestamp_str:
+        # Parse with timezone and convert to UTC
+        dt = datetime.fromisoformat(timestamp_str)
+        return dt.astimezone(timezone.utc)
+    else:
+        # No timezone - assume UTC
+        dt = datetime.fromisoformat(timestamp_str)
+        return dt.replace(tzinfo=timezone.utc)
+
+
 @dataclass
 class TimeRange:
     """Represents a range of time with start and end points."""
@@ -257,9 +296,9 @@ class StoredMessage:
 
     id: str
     type: str  # "Default", "Reply", etc.
-    timestamp: str
-    timestampEdited: Optional[str]
-    callEndedTimestamp: Optional[str]
+    timestamp: str  # ISO format UTC timestamp
+    timestampEdited: Optional[str]  # ISO format UTC timestamp or None
+    callEndedTimestamp: Optional[str]  # ISO format UTC timestamp or None
     isPinned: bool
     content: str
     author: UserInfo
@@ -274,13 +313,11 @@ class StoredMessage:
     @classmethod
     async def from_discord_message(cls, message: Message) -> "StoredMessage":
         """Create from a Discord message."""
-        # Convert timestamp to ISO format with timezone
-        timestamp = message.created_at.astimezone(timezone.utc).isoformat()
-        edited_timestamp = (
-            message.edited_at.astimezone(timezone.utc).isoformat()
-            if message.edited_at
-            else None
-        )
+        # Convert timestamps using utility function
+        timestamp = _format_timestamp(message.created_at)
+        if timestamp is None:  # This should never happen as created_at is required
+            raise ValueError("Message created_at timestamp is required")
+        edited_timestamp = _format_timestamp(message.edited_at)
 
         # Get message type
         msg_type = "Reply" if message.reference else "Default"
@@ -366,7 +403,7 @@ class StoredMessage:
                 "type": embed.type,
                 "description": embed.description,
                 "url": embed.url,
-                "timestamp": embed.timestamp.isoformat() if embed.timestamp else None,
+                "timestamp": _format_timestamp(embed.timestamp),
                 "color": embed.colour.value if embed.colour else None,
                 "footer": (
                     {
@@ -545,21 +582,6 @@ class MessageStore:
         """Get the file path for a channel's metadata."""
         return os.path.join(self.storage_dir, f"{channel_id}_metadata.json")
 
-    def _parse_iso_datetime(self, timestamp_str: str) -> datetime:
-        """Parse an ISO format datetime string and ensure UTC timezone awareness.
-
-        Args:
-            timestamp_str: ISO format datetime string, with or without timezone info
-
-        Returns:
-            datetime object with UTC timezone
-        """
-        # If timestamp ends with Z or +00:00, parse it directly but ensure consistent format
-        if timestamp_str.endswith("Z") or timestamp_str.endswith("+00:00"):
-            return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        # Otherwise add UTC timezone
-        return datetime.fromisoformat(timestamp_str).replace(tzinfo=timezone.utc)
-
     def _load_metadata(self, channel_id: str) -> None:
         """Load metadata for a channel."""
         try:
@@ -567,22 +589,22 @@ class MessageStore:
             if os.path.exists(file_path):
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    # Convert string timestamps back to datetime and ensure timezone awareness
+                    # Convert string timestamps back to datetime using utility function
                     known_ranges = [
                         TimeRange(
-                            start=self._parse_iso_datetime(r["start"]),
-                            end=self._parse_iso_datetime(r["end"]),
+                            start=_parse_timestamp(r["start"]),
+                            end=_parse_timestamp(r["end"]),
                         )
                         for r in data["known_ranges"]
                     ]
                     gaps = [
                         TimeRange(
-                            start=self._parse_iso_datetime(r["start"]),
-                            end=self._parse_iso_datetime(r["end"]),
+                            start=_parse_timestamp(r["start"]),
+                            end=_parse_timestamp(r["end"]),
                         )
                         for r in data["gaps"]
                     ]
-                    last_sync = self._parse_iso_datetime(data["last_sync"])
+                    last_sync = _parse_timestamp(data["last_sync"])
 
                     self._channel_metadata[channel_id] = ChannelMetadata(
                         channel_id=channel_id,
@@ -636,11 +658,11 @@ class MessageStore:
                         data = json.load(f)
 
                         # Store guild info from first file we encounter
-                        if not self._guild_info and "guild" in data:
+                        if not self._guild_info and "guild" in data and data["guild"]:
                             self._guild_info = GuildInfo(**data["guild"])
 
                         # Store channel info
-                        if "channel" in data:
+                        if "channel" in data and data["channel"]:
                             self._channel_info[channel_id] = ChannelInfo(
                                 **data["channel"]
                             )
@@ -714,23 +736,56 @@ class MessageStore:
             messages = self._channel_messages.get(channel_id, {}).values()
             sorted_messages = sorted(
                 messages,
-                key=lambda m: self._parse_iso_datetime(m.timestamp),
+                key=lambda m: _parse_timestamp(m.timestamp),
             )
 
+            # Ensure we have guild info
+            guild_data = None
+            if self._guild_info:
+                guild_data = {
+                    "id": self._guild_info.id,
+                    "name": self._guild_info.name,
+                    "iconUrl": self._guild_info.iconUrl,
+                }
+
+            # Ensure we have channel info
+            channel_data = None
+            if channel_id in self._channel_info:
+                channel_info = self._channel_info[channel_id]
+                channel_data = {
+                    "id": channel_info.id,
+                    "type": channel_info.type,
+                    "categoryId": channel_info.categoryId,
+                    "category": channel_info.category,
+                    "name": channel_info.name,
+                    "topic": channel_info.topic,
+                }
+
+            # Read existing file to preserve any fields we don't modify
+            existing_data = {}
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    try:
+                        existing_data = json.load(f)
+                    except json.JSONDecodeError:
+                        pass
+
+            # Merge with existing data, preserving fields we don't modify
             data = {
-                "guild": serialize_dataclass(self._guild_info),
+                **existing_data,
+                "guild": guild_data if guild_data else existing_data.get("guild"),
                 "channel": (
-                    serialize_dataclass(self._channel_info[channel_id])
-                    if channel_id in self._channel_info
-                    else None
+                    channel_data if channel_data else existing_data.get("channel")
                 ),
-                "dateRange": {"after": None, "before": None},
+                "dateRange": existing_data.get(
+                    "dateRange", {"after": None, "before": None}
+                ),
                 "exportedAt": datetime.now(timezone.utc).isoformat(),
                 "messages": [serialize_dataclass(msg) for msg in sorted_messages],
                 "messageCount": len(sorted_messages),
             }
 
-            with open(file_path, "w") as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             logger.info(f"Saved message data for channel {channel_id}")
 
@@ -806,7 +861,7 @@ class MessageStore:
         """
         channel_dict = self._channel_messages.get(channel_id, {})
         messages = list(channel_dict.values())
-        messages.sort(key=lambda m: self._parse_iso_datetime(m.timestamp))
+        messages.sort(key=lambda m: _parse_timestamp(m.timestamp))
         if limit:
             return messages[-limit:]
         return messages
@@ -919,7 +974,7 @@ class MessageStore:
         # Find the latest message by comparing timestamps
         latest_time = None
         for msg in messages.values():
-            msg_time = self._parse_iso_datetime(msg.timestamp)
+            msg_time = _parse_timestamp(msg.timestamp)
             if latest_time is None or msg_time > latest_time:
                 latest_time = msg_time
 
@@ -1037,16 +1092,16 @@ class MessageStore:
                 if message_count > 0:
                     first_msg = min(
                         (msg for msg in self._channel_messages[channel_id].values()),
-                        key=lambda m: self._parse_iso_datetime(m.timestamp),
+                        key=lambda m: _parse_timestamp(m.timestamp),
                     )
                     last_msg = max(
                         (msg for msg in self._channel_messages[channel_id].values()),
-                        key=lambda m: self._parse_iso_datetime(m.timestamp),
+                        key=lambda m: _parse_timestamp(m.timestamp),
                     )
                     metadata.add_known_range(
                         TimeRange(
-                            start=self._parse_iso_datetime(first_msg.timestamp),
-                            end=self._parse_iso_datetime(last_msg.timestamp),
+                            start=_parse_timestamp(first_msg.timestamp),
+                            end=_parse_timestamp(last_msg.timestamp),
                         )
                     )
 

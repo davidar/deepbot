@@ -87,34 +87,48 @@ async def test_message_store_roundtrip(test_data_dir: str) -> None:
 
         # Compare the important parts of the data
         # Note: We skip exportedAt since it will be different
-        assert new_data["guild"] == orig["guild"], "Guild info mismatch"
-        assert new_data["channel"] == orig["channel"], "Channel info mismatch"
-        assert len(new_data["messages"]) == len(
-            orig["messages"]
-        ), "Message count mismatch"
+        print(f"Comparing file: {filename}")
+        print(f"Original data keys: {list(orig.keys())}")
+        print(f"New data keys: {list(new_data.keys())}")
 
-        # Compare each message's fields
-        for new_msg, orig_msg in zip(new_data["messages"], orig["messages"]):
-            assert new_msg["id"] == orig_msg["id"], "Message ID mismatch"
-            assert new_msg["type"] == orig_msg["type"], "Message type mismatch"
-            assert new_msg["content"] == orig_msg["content"], "Content mismatch"
-            assert new_msg["author"] == orig_msg["author"], "Author info mismatch"
-            assert new_msg["mentions"] == orig_msg["mentions"], "Mentions mismatch"
-            assert (
-                new_msg["attachments"] == orig_msg["attachments"]
-            ), "Attachments mismatch"
-            assert new_msg["reactions"] == orig_msg["reactions"], "Reactions mismatch"
+        # Skip metadata files when comparing message data
+        if not filename.endswith("_metadata.json"):
+            assert new_data.get("guild") == orig.get("guild"), "Guild info mismatch"
+            assert new_data.get("channel") == orig.get(
+                "channel"
+            ), "Channel info mismatch"
+            assert new_data.get("messages", []) == orig.get(
+                "messages", []
+            ), "Message count mismatch"
 
-            # Handle optional reference field
-            if "reference" in orig_msg:
-                assert "reference" in new_msg, "Reference missing in new message"
+            # Compare each message's fields
+            for new_msg, orig_msg in zip(new_data["messages"], orig["messages"]):
+                assert new_msg["id"] == orig_msg["id"], "Message ID mismatch"
+                assert new_msg["type"] == orig_msg["type"], "Message type mismatch"
+                assert new_msg["content"] == orig_msg["content"], "Content mismatch"
+                assert new_msg["author"] == orig_msg["author"], "Author info mismatch"
+                assert new_msg["mentions"] == orig_msg["mentions"], "Mentions mismatch"
                 assert (
-                    new_msg["reference"] == orig_msg["reference"]
-                ), "Reference mismatch"
-            else:
-                assert "reference" not in new_msg, "Unexpected reference in new message"
+                    new_msg["attachments"] == orig_msg["attachments"]
+                ), "Attachments mismatch"
+                assert (
+                    new_msg["reactions"] == orig_msg["reactions"]
+                ), "Reactions mismatch"
 
-            assert new_msg["inlineEmojis"] == orig_msg["inlineEmojis"], "Emoji mismatch"
+                # Handle optional reference field
+                if "reference" in orig_msg:
+                    assert "reference" in new_msg, "Reference missing in new message"
+                    assert (
+                        new_msg["reference"] == orig_msg["reference"]
+                    ), "Reference mismatch"
+                else:
+                    assert (
+                        "reference" not in new_msg
+                    ), "Unexpected reference in new message"
+
+                assert (
+                    new_msg["inlineEmojis"] == orig_msg["inlineEmojis"]
+                ), "Emoji mismatch"
 
     # Cleanup
     shutil.rmtree(new_dir)
