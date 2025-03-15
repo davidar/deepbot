@@ -25,12 +25,31 @@ logger = logging.getLogger("deepbot.message_store")
 T = TypeVar("T")
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    """Ensure a datetime is timezone-aware in UTC.
+
+    Args:
+        dt: datetime object, naive or aware
+
+    Returns:
+        datetime object with UTC timezone
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 @dataclass
 class TimeRange:
     """Represents a range of time with start and end points."""
 
     start: datetime
     end: datetime
+
+    def __post_init__(self) -> None:
+        """Ensure start and end are timezone-aware."""
+        self.start = _ensure_utc(self.start)
+        self.end = _ensure_utc(self.end)
 
     def overlaps(self, other: "TimeRange") -> bool:
         """Check if this range overlaps with another range."""
@@ -526,6 +545,21 @@ class MessageStore:
         """Get the file path for a channel's metadata."""
         return os.path.join(self.storage_dir, f"{channel_id}_metadata.json")
 
+    def _parse_iso_datetime(self, timestamp_str: str) -> datetime:
+        """Parse an ISO format datetime string and ensure UTC timezone awareness.
+
+        Args:
+            timestamp_str: ISO format datetime string, with or without timezone info
+
+        Returns:
+            datetime object with UTC timezone
+        """
+        # If timestamp ends with Z or +00:00, parse it directly but ensure consistent format
+        if timestamp_str.endswith("Z") or timestamp_str.endswith("+00:00"):
+            return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        # Otherwise add UTC timezone
+        return datetime.fromisoformat(timestamp_str).replace(tzinfo=timezone.utc)
+
     def _load_metadata(self, channel_id: str) -> None:
         """Load metadata for a channel."""
         try:
@@ -533,26 +567,28 @@ class MessageStore:
             if os.path.exists(file_path):
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    # Convert string timestamps back to datetime
+                    # Convert string timestamps back to datetime and ensure timezone awareness
                     known_ranges = [
                         TimeRange(
-                            start=datetime.fromisoformat(r["start"]),
-                            end=datetime.fromisoformat(r["end"]),
+                            start=self._parse_iso_datetime(r["start"]),
+                            end=self._parse_iso_datetime(r["end"]),
                         )
                         for r in data["known_ranges"]
                     ]
                     gaps = [
                         TimeRange(
-                            start=datetime.fromisoformat(r["start"]),
-                            end=datetime.fromisoformat(r["end"]),
+                            start=self._parse_iso_datetime(r["start"]),
+                            end=self._parse_iso_datetime(r["end"]),
                         )
                         for r in data["gaps"]
                     ]
+                    last_sync = self._parse_iso_datetime(data["last_sync"])
+
                     self._channel_metadata[channel_id] = ChannelMetadata(
                         channel_id=channel_id,
                         known_ranges=known_ranges,
                         gaps=gaps,
-                        last_sync=datetime.fromisoformat(data["last_sync"]),
+                        last_sync=last_sync,
                     )
         except Exception as e:
             logger.error(f"Error loading metadata for channel {channel_id}: {str(e)}")
@@ -678,9 +714,7 @@ class MessageStore:
             messages = self._channel_messages.get(channel_id, {}).values()
             sorted_messages = sorted(
                 messages,
-                key=lambda m: datetime.fromisoformat(
-                    m.timestamp.replace("Z", "+00:00")
-                ),
+                key=lambda m: self._parse_iso_datetime(m.timestamp),
             )
 
             data = {
@@ -772,9 +806,7 @@ class MessageStore:
         """
         channel_dict = self._channel_messages.get(channel_id, {})
         messages = list(channel_dict.values())
-        messages.sort(
-            key=lambda m: datetime.fromisoformat(m.timestamp.replace("Z", "+00:00"))
-        )
+        messages.sort(key=lambda m: self._parse_iso_datetime(m.timestamp))
         if limit:
             return messages[-limit:]
         return messages
@@ -797,6 +829,14 @@ class MessageStore:
             # Ensure we have metadata for this channel
             if channel_id not in self._channel_metadata:
                 self._load_metadata(channel_id)
+                # If metadata still doesn't exist after loading, create a new one
+                if channel_id not in self._channel_metadata:
+                    self._channel_metadata[channel_id] = ChannelMetadata(
+                        channel_id=channel_id,
+                        known_ranges=[],
+                        gaps=[],
+                        last_sync=datetime.now(timezone.utc),
+                    )
 
             metadata = self._channel_metadata[channel_id]
             now = datetime.now(timezone.utc)
@@ -879,7 +919,7 @@ class MessageStore:
         # Find the latest message by comparing timestamps
         latest_time = None
         for msg in messages.values():
-            msg_time = datetime.fromisoformat(msg.timestamp.replace("Z", "+00:00"))
+            msg_time = self._parse_iso_datetime(msg.timestamp)
             if latest_time is None or msg_time > latest_time:
                 latest_time = msg_time
 
@@ -902,21 +942,27 @@ class MessageStore:
         """
         channel_id = str(channel.id)
         channel_name = get_channel_name(channel)
-        latest_time = self._get_latest_message_time(channel_id)
+
+        logger.info(f"Syncing messages from channel {channel_name}")
 
         try:
-            logger.info(f"Syncing messages from channel {channel_name}")
+            # Initialize channel if needed
+            if channel_id not in self._channel_metadata:
+                await self.initialize_channel(channel)
 
             # Ensure we have metadata for this channel
             if channel_id not in self._channel_metadata:
                 self._load_metadata(channel_id)
 
             metadata = self._channel_metadata[channel_id]
+            latest_time = self._get_latest_message_time(channel_id)
             now = datetime.now(timezone.utc)
 
             if latest_time:
                 # Add overlap period to catch any edits/reactions on recent messages
-                sync_after = latest_time - timedelta(minutes=overlap_minutes)
+                sync_after = _ensure_utc(
+                    latest_time - timedelta(minutes=overlap_minutes)
+                )
 
                 logger.info(
                     f"Syncing messages after {sync_after.isoformat()} (with {overlap_minutes}m overlap)"
@@ -926,7 +972,7 @@ class MessageStore:
                 message_count = 0
                 new_messages = 0
                 updated_messages = 0
-                last_log_time = datetime.now()
+                last_log_time = datetime.now(timezone.utc)
 
                 # Fetch messages after the sync point
                 async for message in channel.history(after=sync_after, limit=None):
@@ -953,7 +999,7 @@ class MessageStore:
                         new_messages += 1
 
                     # Log progress every 5 seconds
-                    now = datetime.now()
+                    now = datetime.now(timezone.utc)
                     if (now - last_log_time).total_seconds() >= 5:
                         logger.info(
                             f"Progress: processed {message_count} messages "
@@ -972,7 +1018,7 @@ class MessageStore:
                 # No existing messages - initialize the channel from newest to oldest
                 logger.info("No existing messages found - initializing channel history")
                 message_count = 0
-                last_log_time = datetime.now()
+                last_log_time = datetime.now(timezone.utc)
 
                 # Start from the most recent message
                 async for message in channel.history(limit=None):
@@ -980,7 +1026,7 @@ class MessageStore:
                     await self.add_message(message)
 
                     # Log progress every 5 seconds
-                    now = datetime.now()
+                    now = datetime.now(timezone.utc)
                     if (now - last_log_time).total_seconds() >= 5:
                         logger.info(
                             f"Initial sync progress: {message_count} messages downloaded"
@@ -991,24 +1037,16 @@ class MessageStore:
                 if message_count > 0:
                     first_msg = min(
                         (msg for msg in self._channel_messages[channel_id].values()),
-                        key=lambda m: datetime.fromisoformat(
-                            m.timestamp.replace("Z", "+00:00")
-                        ),
+                        key=lambda m: self._parse_iso_datetime(m.timestamp),
                     )
                     last_msg = max(
                         (msg for msg in self._channel_messages[channel_id].values()),
-                        key=lambda m: datetime.fromisoformat(
-                            m.timestamp.replace("Z", "+00:00")
-                        ),
+                        key=lambda m: self._parse_iso_datetime(m.timestamp),
                     )
                     metadata.add_known_range(
                         TimeRange(
-                            start=datetime.fromisoformat(
-                                first_msg.timestamp.replace("Z", "+00:00")
-                            ),
-                            end=datetime.fromisoformat(
-                                last_msg.timestamp.replace("Z", "+00:00")
-                            ),
+                            start=self._parse_iso_datetime(first_msg.timestamp),
+                            end=self._parse_iso_datetime(last_msg.timestamp),
                         )
                     )
 
