@@ -38,9 +38,20 @@ def load_example_conversation() -> List[LLMMessage]:
             tool_examples = tool_registry.get_examples()
             for tool_name, examples in tool_examples.items():
                 for example in examples:
-                    messages.append(
-                        LLMMessage(role="user", content=example["user_query"])
-                    )
+                    # Add user query or bot message if present
+                    user_query = example.get("user_query")
+                    bot_message = example.get("bot_message")
+                    tool_args = example.get("tool_args", {})
+                    response = example.get("response", "")
+
+                    if user_query:
+                        messages.append(LLMMessage(role="user", content=user_query))
+                    if bot_message:
+                        messages.append(
+                            LLMMessage(role="assistant", content=bot_message)
+                        )
+
+                    # Add tool call
                     messages.append(
                         LLMMessage(
                             role="assistant",
@@ -48,15 +59,13 @@ def load_example_conversation() -> List[LLMMessage]:
                                 LLMMessage.ToolCall(
                                     function=LLMMessage.ToolCall.Function(
                                         name=tool_name,
-                                        arguments=example["tool_args"],
+                                        arguments=tool_args,
                                     )
                                 )
                             ],
                         )
                     )
-                    messages.append(
-                        LLMMessage(role="tool", content=example["response"])
-                    )
+                    messages.append(LLMMessage(role="tool", content=response))
 
             logger.debug(
                 f"Added tool examples from {len(tool_examples)} tools to conversation"

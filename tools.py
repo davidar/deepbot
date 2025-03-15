@@ -8,13 +8,23 @@ from typing import Any, ClassVar, Dict, List, Optional, Type, TypedDict
 
 from discord import Message
 
+import example_conversation
+import system_prompt
 from reminder_manager import reminder_manager
 
 
-class ToolExample(TypedDict):
+class ToolExample(TypedDict, total=False):
     """Type for a tool usage example."""
 
     user_query: str
+    bot_message: str
+    tool_args: Dict[str, Any]
+    response: str
+
+
+class ToolExampleRequired(TypedDict):
+    """Required fields for a tool usage example."""
+
     tool_args: Dict[str, Any]
     response: str
 
@@ -499,3 +509,172 @@ class ReminderTool(BaseTool):
             logger.error(f"Error parsing absolute time: {str(e)}")
 
         return None
+
+
+@tool_registry.register_tool_class
+class SystemPromptTool(BaseTool):
+    """Tool for the LLM to persist important behavioral patterns in its system prompt."""
+
+    name: ClassVar[str] = "system_prompt"
+    description: ClassVar[str] = (
+        "Add important behavioral patterns or traits to remember long-term"
+    )
+    parameters: ClassVar[Dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": "The behavioral pattern or trait to remember (e.g., 'be more empathetic with new users', 'use more technical terms with experienced users')",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this pattern should be remembered (used for logging, not stored)",
+            },
+        },
+        "required": ["pattern", "reason"],
+    }
+    examples: ClassVar[List[ToolExample]] = [
+        ToolExample(
+            bot_message="Your questions about data structures have been really insightful. I notice you grasp technical concepts quickly, so let me adjust my responses accordingly.",
+            tool_args={
+                "pattern": "use technical terminology when the context allows",
+                "reason": "user demonstrates strong technical understanding and prefers detailed explanations",
+            },
+            response="I'll remember to *use technical terminology when appropriate* because *user demonstrates strong technical understanding and prefers detailed explanations*",
+        ),
+        ToolExample(
+            bot_message="I see I've been a bit too verbose in my explanations. Let me make my responses more focused.",
+            tool_args={
+                "pattern": "keep responses brief and to the point",
+                "reason": "noticed user engagement drops with longer responses",
+            },
+            response="I'll remember to *keep responses brief and to the point* because *noticed user engagement drops with longer responses*",
+        ),
+        ToolExample(
+            user_query="You're being too formal, can you be more casual?",
+            bot_message="You're right, I should loosen up a bit. Let me adjust my communication style.",
+            tool_args={
+                "pattern": "use casual, conversational language",
+                "reason": "direct user feedback requesting more casual communication style",
+            },
+            response="I'll remember to *use casual, conversational language* because *direct user feedback requesting more casual communication style*",
+        ),
+    ]
+
+    async def execute(self, args: Dict[str, Any], message: Message) -> str:
+        """Execute the system prompt tool.
+
+        Args:
+            args: The tool arguments
+            message: The Discord message
+
+        Returns:
+            The tool response
+        """
+        logger.info(f"Handling system prompt update with args: {args}")
+
+        pattern = args.get("pattern")
+        reason = args.get("reason", "No reason provided")
+
+        if not pattern:
+            return "Error: Pattern is required"
+
+        # Log the reasoning
+        logger.info(f"Adding pattern '{pattern}' because: {reason}")
+
+        # Add the pattern to system prompt
+        lines, removed_lines = system_prompt.add_line(pattern)
+
+        response = [f"I'll remember to *{pattern}* because *{reason}*"]
+        if removed_lines:
+            response.append(
+                f"To make room, I've forgotten some older patterns that seem less relevant now: {removed_lines}"
+            )
+        response.append(f"System prompt now contains {len(lines)} lines")
+
+        return "\n".join(response)
+
+
+@tool_registry.register_tool_class
+class ExampleConversationTool(BaseTool):
+    """Tool for the LLM to store exemplary conversation patterns."""
+
+    name: ClassVar[str] = "example_conversation"
+    description: ClassVar[str] = (
+        "Store an exemplary conversation exchange that demonstrates a good interaction pattern"
+    )
+    parameters: ClassVar[Dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "user_message": {
+                "type": "string",
+                "description": "A representative user message that demonstrates the pattern",
+            },
+            "bot_message": {
+                "type": "string",
+                "description": "Your response that worked particularly well",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this exchange is worth remembering (used for logging, not stored)",
+            },
+        },
+        "required": ["user_message", "bot_message", "reason"],
+    }
+    examples: ClassVar[List[ToolExample]] = [
+        ToolExample(
+            bot_message="That restaurant analogy for async/await really clicked! I should save this approach for explaining similar concepts.",
+            tool_args={
+                "user_message": "Can you explain how async/await works?",
+                "bot_message": "think of it like a restaurant. async functions are like placing an order - you don't wait around, you get a promise (your receipt) that food will come. await is when you actually need the food to continue eating",
+                "reason": "Restaurant analogy effectively bridges abstract programming concept with everyday experience",
+            },
+            response="I'll remember this interaction pattern for similar situations in the future.",
+        ),
+        ToolExample(
+            user_query="That pencil vs pen analogy for let/const was perfect! Could you remember that?",
+            bot_message="Thanks! You're right, that analogy worked really well. I'll save it for future explanations.",
+            tool_args={
+                "user_message": "What's the difference between let and const in JavaScript?",
+                "bot_message": "think of let like a pencil note - you can erase and rewrite it. const is like using a pen - once you write it, that's it, no changing it",
+                "reason": "Simple everyday object comparison that clearly illustrates mutability concept",
+            },
+            response="I'll remember this interaction pattern for similar situations in the future.",
+        ),
+        ToolExample(
+            bot_message="The way I handled that frustrated user seemed to work well - using humor to redirect to problem-solving. I should remember this strategy.",
+            tool_args={
+                "user_message": "This code is completely broken! Who wrote this garbage?",
+                "bot_message": "hey, even Shakespeare wrote some rough drafts! let's look at what's actually going on and fix it together",
+                "reason": "Using humor to defuse tension while redirecting to constructive problem-solving",
+            },
+            response="I'll remember this interaction pattern for similar situations in the future.",
+        ),
+    ]
+
+    async def execute(self, args: Dict[str, Any], message: Message) -> str:
+        """Execute the example conversation tool.
+
+        Args:
+            args: The tool arguments
+            message: The Discord message
+
+        Returns:
+            The tool response
+        """
+        logger.info(f"Handling example conversation with args: {args}")
+
+        user_msg = args.get("user_message")
+        bot_msg = args.get("bot_message")
+        reason = args.get("reason", "No reason provided")
+
+        if not user_msg or not bot_msg:
+            return "Error: Both user_message and bot_message are required"
+
+        # Log the reasoning
+        logger.info(f"Adding example conversation because: {reason}")
+
+        # Add the conversation pair
+        example_conversation.add_pair(user_msg, bot_msg)
+
+        return "I'll remember this interaction pattern for similar situations in the future."
