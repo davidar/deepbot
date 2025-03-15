@@ -114,3 +114,4 @@ The bot's behavior can be customized by modifying the options in `model_options.
 ---
 
 *Created [by AI](https://docs.cursor.com/agent) — [for AI](https://mistral.ai/en/news/mistral-small-3).*
+[**Disclaimer.**](https://en.wikipedia.org/wiki/Vibe_coding)
