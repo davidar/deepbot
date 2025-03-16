@@ -233,7 +233,7 @@ async def test_channel_initialization(test_data_dir: str) -> None:
     # Set up message timestamps
     for i, msg in enumerate(messages):
         msg.created_at = now - timedelta(hours=i)
-        msg.timestamp = (now - timedelta(hours=i)).isoformat()
+        msg.timestamp = (now - timedelta(hours=i)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         msg.id = i
         msg.content = f"Message {i}"
         msg.author = Mock()
@@ -324,7 +324,9 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
     # Set up message timestamps in the gap
     for i, msg in enumerate(gap_messages):
         msg.created_at = now - timedelta(hours=20 + i)
-        msg.timestamp = (now - timedelta(hours=20 + i)).isoformat()
+        msg.timestamp = (now - timedelta(hours=20 + i)).strftime(
+            "%Y-%m-%dT%H:%M:%S+00:00"
+        )
         msg.id = i
         msg.content = f"Gap Message {i}"
         msg.author = Mock()

@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional
 import discord
 from discord import Message
 
+from context_builder import ContextBuilder
 from discord_types import StoredMessage
 from message_indexer import MessageIndexer
 from storage_manager import StorageManager
@@ -119,10 +120,12 @@ class MessageStore:
         if not self.message_indexer:
             raise RuntimeError("Search is not available - indexing is not enabled")
 
+        # Request 3x results to account for filtering automated messages
+        search_top_k = top_k * 3
         logger.debug(
-            f"Searching with query: {query}, top_k: {top_k}, filters: {filters}"
+            f"Searching with query: {query}, top_k: {search_top_k} (pre-filter), filters: {filters}"
         )
-        nodes = await self.message_indexer.search(query, top_k, **filters)
+        nodes = await self.message_indexer.search(query, search_top_k, **filters)
         logger.debug(f"Vector store returned {len(nodes)} nodes")
 
         # Group results by channel
@@ -146,10 +149,20 @@ class MessageStore:
             message = self.get_message(channel_id, message_id)
 
             if message:
+                # Skip automated messages
+                if message.content and ContextBuilder.is_automated_message(
+                    message.content
+                ):
+                    logger.debug(f"Skipping automated message {message_id}")
+                    continue
+
                 logger.debug(f"Found message {message_id} in store")
                 if channel_id not in results:
                     results[channel_id] = []
-                results[channel_id].append(message)
+
+                # Only add if we haven't hit top_k for this channel
+                if len(results[channel_id]) < top_k:
+                    results[channel_id].append(message)
             else:
                 logger.debug(f"Message {message_id} not found in store")
 

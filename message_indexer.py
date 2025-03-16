@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, Sequence
 
 import chromadb
+from chromadb.config import Settings as ChromaSettings
 from llama_index.core import Document, Settings, VectorStoreIndex
 from llama_index.core.node_parser import SimpleNodeParser
 from llama_index.core.schema import NodeWithScore
@@ -40,7 +41,9 @@ class MessageIndexer:
         Settings.node_parser = SimpleNodeParser()
 
         # Set up vector store
-        self.chroma_client = chromadb.PersistentClient(path=storage_path)
+        self.chroma_client = chromadb.PersistentClient(
+            path=storage_path, settings=ChromaSettings(anonymized_telemetry=False)
+        )
         self.chroma_collection = self.chroma_client.get_or_create_collection(
             "discord_messages"
         )
