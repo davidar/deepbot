@@ -74,7 +74,7 @@ class ToolRegistry:
     _instance = None
 
     @classmethod
-    def __new__(cls) -> "ToolRegistry":
+    def __new__(cls, *args, **kwargs) -> "ToolRegistry":
         """Ensure singleton pattern for ToolRegistry.
 
         Returns:

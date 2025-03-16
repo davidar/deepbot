@@ -26,7 +26,7 @@ class ReminderManager:
     REMINDERS_FILE = "reminders.json"
 
     @classmethod
-    def __new__(cls) -> "ReminderManager":
+    def __new__(cls, *args, **kwargs) -> "ReminderManager":
         """Ensure singleton pattern for ReminderManager.
 
         Returns:

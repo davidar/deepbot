@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import traceback
 from enum import Enum
 from typing import (
     Any,
@@ -99,7 +100,7 @@ class LLMResponseHandler:
 
         return current_line, has_non_whitespace, yields
 
-    def _create_tool_call_data(self, tool_call: Any) -> Dict[str, Any]:
+    def _create_tool_call_data(self, tool_call: LLMMessage.ToolCall) -> Dict[str, Any]:
         """Create tool call data from a tool call object.
 
         Args:
@@ -116,7 +117,7 @@ class LLMResponseHandler:
             "args": (
                 function_args
                 if isinstance(function_args, dict)
-                else json.loads(function_args)
+                else json.loads(str(function_args))
             ),
         }
 
@@ -201,6 +202,9 @@ class LLMResponseHandler:
 
         except Exception as e:
             logger.error(f"Error handling tool response: {str(e)}")
+            logger.error(f"Full error details: {repr(e)}")
+            logger.error(f"Stack trace:\n{traceback.format_exc()}")
+            yield (LineStatus.COMPLETE, str(e))
 
     async def _create_chat_stream(
         self,
@@ -228,7 +232,7 @@ class LLMResponseHandler:
 
     async def _handle_tool_call(
         self,
-        tool_call: Any,
+        tool_call: LLMMessage.ToolCall,
         context: List[LLMMessage],
         tools: List[ToolDefinition],
         current_line: str,
@@ -384,11 +388,11 @@ class LLMResponseHandler:
                 f"Starting streaming response with {len(context)} context messages"
             )
             # Convert context to JSON, handling both Pydantic models and dicts
-            context_json = [
-                msg.model_dump(exclude_none=True) if hasattr(msg, "model_dump") else msg
-                for msg in context
-            ]
-            logger.info(f"Context: {json.dumps(context_json, indent=2)}")
+            # context_json = [
+            #     msg.model_dump(exclude_none=True) if hasattr(msg, "model_dump") else msg
+            #     for msg in context
+            # ]
+            # logger.info(f"Context: {json.dumps(context_json, indent=2)}")
 
             # Get tools
             tools = self.tool_registry.get_tools()
@@ -407,6 +411,7 @@ class LLMResponseHandler:
             error_message = f"-# Error in streaming response: {str(e)}"
             logger.error(error_message)
             logger.error(f"Full error details: {repr(e)}")
+            logger.error(f"Stack trace:\n{traceback.format_exc()}")
             yield (LineStatus.COMPLETE, error_message)
 
     async def process_response_queue(
