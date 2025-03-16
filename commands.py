@@ -302,6 +302,10 @@ def setup_commands(
                 user_msg = parts[0].strip()
                 bot_msg = parts[1].strip()
 
+                if not user_msg or not bot_msg:
+                    await ctx.send("-# Both user and bot messages must not be empty")
+                    return
+
                 pairs = example_conversation.add_pair(user_msg, bot_msg)
                 await ctx.send(f"-# Added new message pair #{len(pairs)}:")
                 await ctx.send(f"-# User: {user_msg}\n-# Bot: {bot_msg}")
@@ -355,19 +359,31 @@ def setup_commands(
                     return
 
                 msg_parts = parts[1].split("|", 1)
-
-                user_msg = None
-                bot_msg = None
+                edit_user_msg: Optional[str] = None
+                edit_bot_msg: Optional[str] = None
 
                 if len(msg_parts) == 2:
                     # Both messages provided
-                    user_msg = msg_parts[0].strip() or None
-                    bot_msg = msg_parts[1].strip() or None
+                    user_msg_str = msg_parts[0].strip()
+                    bot_msg_str = msg_parts[1].strip()
+                    if not user_msg_str and not bot_msg_str:
+                        await ctx.send("-# At least one message must not be empty")
+                        return
+                    # Convert empty strings to None
+                    edit_user_msg = user_msg_str if user_msg_str else None
+                    edit_bot_msg = bot_msg_str if bot_msg_str else None
                 else:
                     # Only one message provided - treat as user message
-                    user_msg = msg_parts[0].strip() or None
+                    user_msg_str = msg_parts[0].strip()
+                    if not user_msg_str:
+                        await ctx.send("-# Message must not be empty")
+                        return
+                    # Convert empty string to None
+                    edit_user_msg = user_msg_str if user_msg_str else None
 
-                pairs, edited = example_conversation.edit_pair(index, user_msg, bot_msg)
+                pairs, edited = example_conversation.edit_pair(
+                    index, edit_user_msg, edit_bot_msg
+                )
                 if edited:
                     await ctx.send(
                         f"-# Edited message pair #{index + 1} to:\n"

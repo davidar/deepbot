@@ -327,7 +327,9 @@ async def test_channel_initialization(test_data_dir: str) -> None:
     )
 
     # Mock add_message to store messages
-    async def mock_add_message(message: Message) -> None:
+    mock_add_message = Mock()
+
+    async def _mock_add_message(message: Message) -> None:
         # pylint: disable=protected-access
         stored_msg = StoredMessage(
             id=str(message.id),
@@ -362,7 +364,8 @@ async def test_channel_initialization(test_data_dir: str) -> None:
         # pylint: disable=protected-access
         store._channel_messages[str(channel.id)][stored_msg.id] = stored_msg
 
-    store.add_message = mock_add_message
+    mock_add_message.side_effect = _mock_add_message
+    store.add_message = mock_add_message  # type: ignore[method-assign]
 
     await store.initialize_channel(channel)
 
@@ -437,7 +440,9 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
     channel.history = mock_history
 
     # Mock add_message to store messages
-    async def mock_add_message(message: Message) -> None:
+    mock_add_message = Mock()
+
+    async def _mock_add_message(message: Message) -> None:
         # pylint: disable=protected-access
         stored_msg = StoredMessage(
             id=str(message.id),
@@ -472,7 +477,8 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
         # pylint: disable=protected-access
         store._channel_messages[str(channel.id)][stored_msg.id] = stored_msg
 
-    store.add_message = mock_add_message
+    mock_add_message.side_effect = _mock_add_message
+    store.add_message = mock_add_message  # type: ignore[method-assign]
 
     # Initialize the channel
     await store.initialize_channel(channel)

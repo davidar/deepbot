@@ -171,7 +171,7 @@ async def search_messages(
     with console.status("[bold green]Searching messages..."):
         results = await index.search(query, top_k=top_k, **filters)
 
-    display_search_results(results)
+    display_search_results(list(results))
 
 
 def index_messages(

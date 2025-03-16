@@ -121,19 +121,19 @@ class LocalDiscordIndex:
     async def search(
         self, query: str, top_k: int = 5, **filters: Dict[str, Any]
     ) -> Sequence[NodeWithScore]:
-        """Search messages with optional filters.
+        """Search for messages matching the query.
 
         Args:
             query: The search query
-            top_k: Number of results to return
-            **filters: Metadata filters to apply (e.g. channel_id="123", author="name")
+            top_k: Maximum number of results to return
+            **filters: Optional filters to apply (e.g. channel_id, author_id)
 
         Returns:
             List of matching nodes with their relevance scores
         """
-        retriever = self.index.as_retriever(similarity_top_k=top_k)
-        if filters:
-            retriever.filters = filters
+        retriever = self.index.as_retriever(
+            similarity_top_k=top_k, filters=filters if filters else None
+        )
 
         nodes = await retriever.aretrieve(query)
         return nodes
