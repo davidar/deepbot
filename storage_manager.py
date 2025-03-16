@@ -3,8 +3,9 @@
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+import pendulum
 
 from discord_types import (
     ChannelInfo,
@@ -16,6 +17,7 @@ from discord_types import (
     serialize_dataclass,
 )
 from time_tracking import ChannelMetadata, TimeRange
+from utils.time_utils import parse_datetime
 
 # Set up logging
 logger = logging.getLogger("deepbot.storage_manager")
@@ -62,19 +64,19 @@ class StorageManager:
                     # Convert string timestamps back to datetime
                     known_ranges = [
                         TimeRange(
-                            start=datetime.fromisoformat(r["start"]),
-                            end=datetime.fromisoformat(r["end"]),
+                            start=parse_datetime(r["start"]),
+                            end=parse_datetime(r["end"]),
                         )
                         for r in data["known_ranges"]
                     ]
                     gaps = [
                         TimeRange(
-                            start=datetime.fromisoformat(r["start"]),
-                            end=datetime.fromisoformat(r["end"]),
+                            start=parse_datetime(r["start"]),
+                            end=parse_datetime(r["end"]),
                         )
                         for r in data["gaps"]
                     ]
-                    last_sync = datetime.fromisoformat(data["last_sync"])
+                    last_sync = parse_datetime(data["last_sync"])
 
                     self.channel_metadata[channel_id] = ChannelMetadata(
                         channel_id=channel_id,
@@ -96,7 +98,7 @@ class StorageManager:
                 channel_id=channel_id,
                 known_ranges=[],
                 gaps=[],
-                last_sync=datetime.now(timezone.utc),
+                last_sync=pendulum.now("UTC"),
             )
 
     def _save_metadata(self, channel_id: str) -> None:
@@ -109,14 +111,20 @@ class StorageManager:
             file_path = self._get_metadata_file(channel_id)
             data = {
                 "known_ranges": [
-                    {"start": r.start.isoformat(), "end": r.end.isoformat()}
+                    {
+                        "start": r.start.to_iso8601_string(),
+                        "end": r.end.to_iso8601_string(),
+                    }
                     for r in metadata.known_ranges
                 ],
                 "gaps": [
-                    {"start": r.start.isoformat(), "end": r.end.isoformat()}
+                    {
+                        "start": r.start.to_iso8601_string(),
+                        "end": r.end.to_iso8601_string(),
+                    }
                     for r in metadata.gaps
                 ],
-                "last_sync": metadata.last_sync.isoformat(),
+                "last_sync": metadata.last_sync.to_iso8601_string(),
             }
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
@@ -233,7 +241,7 @@ class StorageManager:
             messages = self.messages.get(channel_id, {}).values()
             sorted_messages = sorted(
                 messages,
-                key=lambda m: datetime.fromisoformat(m.timestamp),
+                key=lambda m: parse_datetime(m.timestamp),
             )
 
             # Ensure we have guild info
@@ -258,73 +266,45 @@ class StorageManager:
                     "topic": channel_info.topic,
                 }
 
-            # Read existing file to preserve any fields we don't modify
-            existing_data: Dict[str, Any] = {}
-            if os.path.exists(file_path):
-                with open(file_path, "r", encoding="utf-8") as f:
-                    try:
-                        existing_data = json.load(f)
-                    except json.JSONDecodeError:
-                        pass
-
-            # Define the date range type
-            date_range = {"after": None, "before": None}
-
-            # Merge with existing data, preserving fields we don't modify
-            data: Dict[str, Any] = {
-                **existing_data,
-                "guild": guild_data if guild_data else existing_data.get("guild"),
-                "channel": (
-                    channel_data if channel_data else existing_data.get("channel")
-                ),
-                "dateRange": existing_data.get("dateRange", date_range),
-                "exportedAt": datetime.now(timezone.utc).isoformat(),
+            # Prepare data for serialization
+            data = {
+                "exportedAt": pendulum.now("UTC").to_iso8601_string(),
+                "guild": guild_data,
+                "channel": channel_data,
                 "messages": [serialize_dataclass(msg) for msg in sorted_messages],
-                "messageCount": len(sorted_messages),
             }
 
+            # Save to file
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            logger.info(f"Saved message data for channel {channel_id}")
 
-            # Save metadata after saving messages
+            # Save metadata
             self._save_metadata(channel_id)
         except Exception as e:
-            logger.error(
-                f"Error saving message data for channel {channel_id}: {str(e)}"
-            )
+            logger.error(f"Error saving data for channel {channel_id}: {str(e)}")
 
     def get_message(self, channel_id: str, message_id: str) -> Optional[StoredMessage]:
-        """Get a message by channel and message ID."""
+        """Get a specific message by ID."""
         return self.messages.get(channel_id, {}).get(message_id)
 
     def get_channel_messages(
         self, channel_id: str, limit: Optional[int] = None
     ) -> List[StoredMessage]:
-        """Get messages from a channel.
-
-        Args:
-            channel_id: The Discord channel ID
-            limit: Optional maximum number of messages to return (most recent)
-
-        Returns:
-            List of stored messages in chronological order
-        """
-        channel_dict = self.messages.get(channel_id, {})
-        messages = list(channel_dict.values())
-        messages.sort(key=lambda m: m.timestamp)
+        """Get all messages for a channel."""
+        messages = list(self.messages.get(channel_id, {}).values())
+        messages.sort(key=lambda m: parse_datetime(m.timestamp))
         if limit:
-            return messages[-limit:]
+            return messages[:limit]
         return messages
 
     def add_message(self, channel_id: str, message: StoredMessage) -> None:
-        """Add a new message to storage or update an existing one."""
+        """Add a message to storage."""
         if channel_id not in self.messages:
             self.messages[channel_id] = {}
         self.messages[channel_id][message.id] = message
 
     def get_channel_ids(self) -> List[str]:
-        """Get list of channel IDs."""
+        """Get all channel IDs."""
         return list(self.messages.keys())
 
     def get_channel_metadata(self, channel_id: str) -> Optional[ChannelMetadata]:
@@ -334,12 +314,9 @@ class StorageManager:
     def ensure_channel_metadata(self, channel_id: str) -> None:
         """Ensure metadata exists for a channel."""
         if channel_id not in self.channel_metadata:
-            self._load_metadata(channel_id)
-            # If metadata still doesn't exist after loading, create a new one
-            if channel_id not in self.channel_metadata:
-                self.channel_metadata[channel_id] = ChannelMetadata(
-                    channel_id=channel_id,
-                    known_ranges=[],
-                    gaps=[],
-                    last_sync=datetime.now(timezone.utc),
-                )
+            self.channel_metadata[channel_id] = ChannelMetadata(
+                channel_id=channel_id,
+                known_ranges=[],
+                gaps=[],
+                last_sync=pendulum.now("UTC"),
+            )

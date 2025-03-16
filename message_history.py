@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, List
 from discord import Message
 
 import config
-from utils import get_channel_name
+from utils.discord_utils import get_channel_name
 
 if TYPE_CHECKING:
     from discord.abc import MessageableChannel

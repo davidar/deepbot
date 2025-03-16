@@ -9,6 +9,7 @@ from discord.ext import commands
 
 from context_builder import ContextBuilder
 from message_history import MessageHistoryManager
+from utils.time_utils import ensure_datetime
 
 Context = commands.Context[commands.Bot]
 
@@ -102,7 +103,9 @@ class HistoryCommands:
             return
 
         # Set the reset timestamp to now
-        self.context_builder.reset_history_from(ctx.channel.id, ctx.message.created_at)
+        self.context_builder.reset_history_from(
+            ctx.channel.id, ensure_datetime(ctx.message.created_at)
+        )
         await ctx.send(
             "-# Conversation history has been wiped. Only messages from this point forward will be included in context."
         )

@@ -1,20 +1,22 @@
-"""Reminder management system for the bot."""
+"""Reminder management for DeepBot."""
 
-import datetime
 import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import discord
+import pendulum
 from discord import DMChannel, GroupChannel, TextChannel
+from pendulum import DateTime
 
-# Use TYPE_CHECKING to avoid circular imports
+from utils.time_utils import format_timestamp, parse_datetime
+
 if TYPE_CHECKING:
     from llm_streaming import LLMResponseHandler
 
 # Set up logging
-logger = logging.getLogger("deepbot.reminders")
+logger = logging.getLogger("deepbot.reminder_manager")
 
 
 class ReminderManager:
@@ -84,7 +86,7 @@ class ReminderManager:
         channel_id: int,
         user_id: int,
         content: str,
-        due_time: datetime.datetime,
+        due_time: DateTime,
         message_id: int,
     ) -> None:
         """Add a new reminder.
@@ -101,8 +103,8 @@ class ReminderManager:
             "channel_id": channel_id,
             "user_id": user_id,
             "content": content,
-            "due_time": due_time.isoformat(),
-            "created_at": datetime.datetime.now().isoformat(),
+            "due_time": format_timestamp(due_time),
+            "created_at": format_timestamp(pendulum.now("UTC")),
             "message_id": message_id,
         }
         self._save_reminders()
@@ -130,11 +132,11 @@ class ReminderManager:
         Returns:
             List of due reminders
         """
-        now = datetime.datetime.now()
+        now = pendulum.now("UTC")
         due_reminders: List[Dict[str, Any]] = []
 
         for reminder_id, reminder in list(self.reminders.items()):
-            due_time = datetime.datetime.fromisoformat(reminder["due_time"])
+            due_time = parse_datetime(reminder["due_time"])
             if due_time <= now:
                 due_reminder = reminder.copy()
                 due_reminder["id"] = reminder_id

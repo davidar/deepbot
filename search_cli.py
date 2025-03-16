@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""CLI tool for indexing and searching Discord messages."""
+"""Command-line interface for searching messages."""
 
 import argparse
 import asyncio
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from rich.console import Console
@@ -15,6 +14,7 @@ import config
 from discord_types import StoredMessage
 from message_indexer import MessageIndexer
 from message_store import MessageStore
+from utils.time_utils import parse_datetime
 
 # Set up logging
 logging.basicConfig(
@@ -28,7 +28,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("chromadb").setLevel(logging.WARNING)
 
-logger = logging.getLogger("search_cli")
+logger = logging.getLogger("deepbot.search_cli")
 console = Console()
 
 
@@ -108,9 +108,9 @@ def setup_argparse() -> argparse.ArgumentParser:
 def format_timestamp(timestamp_str: str) -> str:
     """Format ISO timestamp into a readable format."""
     try:
-        dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except (ValueError, AttributeError):
+        dt = parse_datetime(timestamp_str)
+        return dt.format("YYYY-MM-DD HH:mm:ss")
+    except ValueError:
         return "Unknown time"
 
 

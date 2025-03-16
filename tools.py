@@ -1,16 +1,17 @@
 """Tools for the bot to use in responses."""
 
-import datetime
 import logging
 import random
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar, Dict, List, Optional, Type, TypedDict
 
+import pendulum
 from discord import Message
 
 import example_conversation
 import system_prompt
 from reminder_manager import reminder_manager
+from utils.time_utils import parse_time_string
 
 
 class ToolExample(TypedDict, total=False):
@@ -413,7 +414,7 @@ class ReminderTool(BaseTool):
 
         # Parse the time string to get a datetime
         try:
-            due_time = self._parse_time_string(time_str)
+            due_time = parse_time_string(time_str)
             if due_time is None:
                 error_response = (
                     f"Error: Could not parse time '{time_str}'. "
@@ -428,9 +429,7 @@ class ReminderTool(BaseTool):
             return error_response
 
         # Create a unique ID for the reminder
-        reminder_id = (
-            f"reminder_{message.id}_{int(datetime.datetime.now().timestamp())}"
-        )
+        reminder_id = f"reminder_{message.id}_{int(pendulum.now('UTC').timestamp())}"
 
         # Add the reminder
         reminder_manager.add_reminder(
@@ -443,116 +442,18 @@ class ReminderTool(BaseTool):
         )
 
         # Format the response
-        now = datetime.datetime.now()
+        now = pendulum.now("UTC")
         if due_time.date() == now.date():
             # Same day, just show time
-            time_format = "today at %I:%M %p"
+            time_format = "h:mm A [today]"
         else:
             # Different day, show date and time
-            time_format = "on %B %d, %Y at %I:%M %p"
+            time_format = "MMMM D, YYYY [at] h:mm A"
 
-        response = f"I'll remind you about '{content}' {due_time.strftime(time_format)}"
+        response = f"I'll remind you about '{content}' {due_time.format(time_format)}"
         logger.info(f"Reminder response: {response}")
 
         return response
-
-    def _parse_relative_time(self, time_str: str) -> Optional[datetime.datetime]:
-        """Parse a relative time string (e.g., 5m, 2h).
-
-        Args:
-            time_str: The time string to parse (e.g., "5m", "2h")
-
-        Returns:
-            A datetime object or None if parsing fails
-        """
-        if not time_str.endswith(("s", "m", "h", "d")):
-            return None
-
-        try:
-            value = int(time_str[:-1])
-            unit = time_str[-1]
-            now = datetime.datetime.now()
-
-            if unit == "s":
-                return now + datetime.timedelta(seconds=value)
-            elif unit == "m":
-                return now + datetime.timedelta(minutes=value)
-            elif unit == "h":
-                return now + datetime.timedelta(hours=value)
-            elif unit == "d":
-                return now + datetime.timedelta(days=value)
-        except ValueError:
-            logger.error(f"Could not parse relative time: {time_str}")
-            return None
-
-        return None
-
-    def _parse_absolute_time(self, time_str: str) -> Optional[datetime.datetime]:
-        """Parse an absolute time string.
-
-        Args:
-            time_str: The time string to parse
-
-        Returns:
-            A datetime object or None if parsing fails
-        """
-        now = datetime.datetime.now()
-
-        # Try ISO format first
-        try:
-            return datetime.datetime.fromisoformat(time_str)
-        except ValueError:
-            pass
-
-        # Try common formats
-        formats = [
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%d %H:%M:%S",
-            "%m/%d/%Y %H:%M",
-            "%d/%m/%Y %H:%M",
-            "%H:%M",  # Today at the specified time
-        ]
-
-        for fmt in formats:
-            try:
-                parsed_time = datetime.datetime.strptime(time_str, fmt)
-
-                # If only time was provided, set the date to today
-                if fmt == "%H:%M":
-                    parsed_time = parsed_time.replace(
-                        year=now.year, month=now.month, day=now.day
-                    )
-
-                    # If the time has already passed today, set it to tomorrow
-                    if parsed_time < now:
-                        parsed_time += datetime.timedelta(days=1)
-
-                return parsed_time
-            except ValueError:
-                continue
-
-        return None
-
-    def _parse_time_string(self, time_str: str) -> Optional[datetime.datetime]:
-        """Parse a time string into a datetime object.
-
-        Args:
-            time_str: The time string to parse
-
-        Returns:
-            A datetime object or None if parsing fails
-        """
-        # Try parsing as relative time first
-        result = self._parse_relative_time(time_str)
-        if result:
-            return result
-
-        # Try parsing as absolute time
-        result = self._parse_absolute_time(time_str)
-        if result:
-            return result
-
-        return None
 
 
 @tool_registry.register_tool_class

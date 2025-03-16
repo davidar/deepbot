@@ -7,14 +7,15 @@ import json
 import os
 import shutil
 import tempfile
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Generator, List
+from typing import Any, AsyncGenerator, Dict, Generator, List, Union
 from unittest.mock import Mock, patch
 
+import pendulum
 import pytest
 from discord import TextChannel
 from discord.message import Message
+from pendulum import Duration
 
 from message_store import MessageStore
 from time_tracking import ChannelMetadata, TimeRange
@@ -38,16 +39,16 @@ def test_data_dir() -> Generator[str, None, None]:
     shutil.rmtree(temp_dir)
 
 
-def normalize_json(data: Any) -> Any:
+def normalize_json(data: Union[Dict[str, Any], List[Any], Any]) -> Any:
     """Normalize JSON data for comparison by removing dynamic fields."""
     if isinstance(data, dict):
         return {
             str(k): normalize_json(v)
-            for k, v in data.items()  # pyright: ignore
+            for k, v in data.items()
             if k != "exportedAt"  # Skip this field as it changes
         }
     elif isinstance(data, list):
-        return [normalize_json(item) for item in data]  # pyright: ignore
+        return [normalize_json(item) for item in data]
     else:
         return data
 
@@ -145,20 +146,20 @@ async def test_gap_tracking(test_data_dir: str) -> None:
             channel_id=channel_id,
             known_ranges=[],
             gaps=[],
-            last_sync=datetime.now(timezone.utc),
+            last_sync=pendulum.now("UTC"),
         )
 
         # Add known ranges
         metadata.add_known_range(
             TimeRange(
-                start=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                start=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                end=pendulum.datetime(2024, 1, 2, tz="UTC"),
             )
         )
         metadata.add_known_range(
             TimeRange(
-                start=datetime(2024, 1, 4, tzinfo=timezone.utc),
-                end=datetime(2024, 1, 5, tzinfo=timezone.utc),
+                start=pendulum.datetime(2024, 1, 4, tz="UTC"),
+                end=pendulum.datetime(2024, 1, 5, tz="UTC"),
             )
         )
 
@@ -167,8 +168,8 @@ async def test_gap_tracking(test_data_dir: str) -> None:
 
         # Check that gaps are detected
         assert len(metadata.gaps) == 1
-        assert metadata.gaps[0].start == datetime(2024, 1, 2, tzinfo=timezone.utc)
-        assert metadata.gaps[0].end == datetime(2024, 1, 4, tzinfo=timezone.utc)
+        assert metadata.gaps[0].start == pendulum.datetime(2024, 1, 2, tz="UTC")
+        assert metadata.gaps[0].end == pendulum.datetime(2024, 1, 4, tz="UTC")
 
 
 @pytest.mark.asyncio
@@ -184,7 +185,7 @@ async def test_recent_gaps(test_data_dir: str) -> None:
         channel_id = "123456789"
 
         # Create metadata with some known ranges
-        now = datetime.now(timezone.utc)
+        now = pendulum.now("UTC")
         metadata = ChannelMetadata(
             channel_id=channel_id,
             known_ranges=[],
@@ -195,13 +196,13 @@ async def test_recent_gaps(test_data_dir: str) -> None:
         # Add known ranges
         metadata.add_known_range(
             TimeRange(
-                start=now - timedelta(hours=48),
-                end=now - timedelta(hours=24),
+                start=now.subtract(hours=48),
+                end=now.subtract(hours=24),
             )
         )
         metadata.add_known_range(
             TimeRange(
-                start=now - timedelta(hours=12),
+                start=now.subtract(hours=12),
                 end=now,
             )
         )
@@ -210,10 +211,10 @@ async def test_recent_gaps(test_data_dir: str) -> None:
         store.storage_manager.channel_metadata[channel_id] = metadata
 
         # Check recent gaps (last 24 hours)
-        recent_gaps = metadata.get_recent_gaps(timedelta(hours=24))
+        recent_gaps = metadata.get_recent_gaps(Duration(hours=24))
         assert len(recent_gaps) == 1
-        assert recent_gaps[0].start == now - timedelta(hours=24)
-        assert recent_gaps[0].end == now - timedelta(hours=12)
+        assert recent_gaps[0].start == now.subtract(hours=24)
+        assert recent_gaps[0].end == now.subtract(hours=12)
 
 
 @pytest.mark.asyncio
@@ -227,13 +228,13 @@ async def test_channel_initialization(test_data_dir: str) -> None:
     channel.name = "test-channel"
 
     # Create some mock messages
-    now = datetime.now(timezone.utc).replace(microsecond=0)  # Round to seconds
+    now = pendulum.now("UTC").set(microsecond=0)  # Round to seconds
     messages: List[Mock] = [Mock(spec=Message) for _ in range(5)]
 
     # Set up message timestamps
     for i, msg in enumerate(messages):
-        msg.created_at = now - timedelta(hours=i)
-        msg.timestamp = (now - timedelta(hours=i)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        msg.created_at = now.subtract(hours=i)
+        msg.timestamp = now.subtract(hours=i).format("YYYY-MM-DDTHH:mm:ssZ")
         msg.id = i
         msg.content = f"Message {i}"
         msg.author = Mock()
@@ -292,7 +293,7 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
     channel.name = "test-channel"
 
     # Create metadata with a gap
-    now = datetime.now(timezone.utc)
+    now = pendulum.now("UTC")
     metadata = ChannelMetadata(
         channel_id=str(channel.id),
         known_ranges=[],
@@ -303,13 +304,13 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
     # Add known ranges
     metadata.add_known_range(
         TimeRange(
-            start=now - timedelta(hours=48),
-            end=now - timedelta(hours=24),
+            start=now.subtract(hours=48),
+            end=now.subtract(hours=24),
         )
     )
     metadata.add_known_range(
         TimeRange(
-            start=now - timedelta(hours=12),
+            start=now.subtract(hours=12),
             end=now,
         )
     )
@@ -323,10 +324,8 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
 
     # Set up message timestamps in the gap
     for i, msg in enumerate(gap_messages):
-        msg.created_at = now - timedelta(hours=20 + i)
-        msg.timestamp = (now - timedelta(hours=20 + i)).strftime(
-            "%Y-%m-%dT%H:%M:%S+00:00"
-        )
+        msg.created_at = now.subtract(hours=20 + i)
+        msg.timestamp = now.subtract(hours=20 + i).format("YYYY-MM-DDTHH:mm:ssZ")
         msg.id = i
         msg.content = f"Gap Message {i}"
         msg.author = Mock()

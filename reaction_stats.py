@@ -1,11 +1,13 @@
 """Reaction statistics tracking for DeepBot."""
 
-import datetime
 import logging
 from typing import Dict, List, Tuple
 
+import pendulum
+
 from discord_types import StoredMessage
 from message_store import MessageStore
+from utils.time_utils import parse_datetime
 
 # Set up logging
 logger = logging.getLogger("deepbot.reactions")
@@ -37,10 +39,8 @@ class ReactionStats:
         )
 
         # Get message age in hours
-        msg_time = datetime.datetime.fromisoformat(
-            message.timestamp.replace("Z", "+00:00")
-        )
-        current_time = datetime.datetime.now(datetime.timezone.utc)
+        msg_time = parse_datetime(message.timestamp)
+        current_time = pendulum.now("UTC")
         age_hours = float((current_time - msg_time).total_seconds()) / 3600.0
 
         # Simple decay formula: score = reactions / (age_hours + 2)^1.5

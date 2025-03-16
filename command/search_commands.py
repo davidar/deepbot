@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands
 
 from message_store import MessageStore
-from utils import format_search_results
+from utils.message_formatter import format_search_results
 
 Context = commands.Context[commands.Bot]
 

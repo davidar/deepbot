@@ -1,55 +1,28 @@
 """Type definitions for Discord message storage."""
 
 import logging
-from dataclasses import dataclass, fields
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TypeVar, Union
+from dataclasses import dataclass, fields, is_dataclass
+from typing import Any, Dict, List, Optional, Protocol, TypeVar, Union, cast
 
+import pendulum
 from discord import Embed, Emoji, Member, Message, PartialEmoji
 from discord import Role as DiscordRole
 from discord import Sticker, StickerItem, User
 
+from utils.time_utils import format_timestamp
+
 # Set up logging
 logger = logging.getLogger("deepbot.discord_types")
 
-
-def _format_timestamp(dt: Optional[datetime]) -> Optional[str]:
-    """Format a datetime into a consistent ISO format with Z timezone.
-
-    Args:
-        dt: datetime object to format, or None
-
-    Returns:
-        ISO format string with Z timezone, or None if input is None
-    """
-    if dt is None:
-        return None
-    # Convert to UTC, format with 3 decimal places for microseconds, and use Z suffix
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+# Type variable for dataclass objects
+T = TypeVar("T")
+DataclassType = TypeVar("DataclassType")
 
 
-def _parse_timestamp(timestamp_str: str) -> datetime:
-    """Parse an ISO format datetime string and ensure UTC timezone awareness.
+class DataclassProtocol(Protocol):
+    """Protocol for dataclass objects."""
 
-    Args:
-        timestamp_str: ISO format datetime string, with or without timezone info
-
-    Returns:
-        datetime object with UTC timezone
-    """
-    # Convert any timezone format to UTC
-    if timestamp_str.endswith("Z"):
-        # Remove Z and add UTC timezone
-        dt = datetime.fromisoformat(timestamp_str[:-1])
-        return dt.replace(tzinfo=timezone.utc)
-    elif "+" in timestamp_str:
-        # Parse with timezone and convert to UTC
-        dt = datetime.fromisoformat(timestamp_str)
-        return dt.astimezone(timezone.utc)
-    else:
-        # No timezone - assume UTC
-        dt = datetime.fromisoformat(timestamp_str)
-        return dt.replace(tzinfo=timezone.utc)
+    __dataclass_fields__: Dict[str, Any]
 
 
 @dataclass
@@ -237,7 +210,9 @@ class StoredMessage:
             "type": embed.type,
             "description": embed.description,
             "url": embed.url,
-            "timestamp": _format_timestamp(embed.timestamp),
+            "timestamp": format_timestamp(
+                pendulum.instance(embed.timestamp) if embed.timestamp else None
+            ),
             "color": embed.colour.value if embed.colour else None,
             "footer": (
                 {
@@ -388,10 +363,12 @@ class StoredMessage:
     async def from_discord_message(cls, message: Message) -> "StoredMessage":
         """Create from a Discord message."""
         # Convert timestamps using utility function
-        timestamp = _format_timestamp(message.created_at)
+        timestamp = format_timestamp(pendulum.instance(message.created_at))
         if timestamp is None:  # This should never happen as created_at is required
             raise ValueError("Message created_at timestamp is required")
-        edited_timestamp = _format_timestamp(message.edited_at)
+        edited_timestamp = format_timestamp(
+            pendulum.instance(message.edited_at) if message.edited_at else None
+        )
 
         # Get message type
         msg_type = "Reply" if message.reference else "Default"
@@ -471,41 +448,37 @@ class StoredMessage:
         )
 
 
-T = TypeVar("T")
-
-
 def serialize_dataclass(obj: Any) -> Optional[Dict[str, Any]]:
-    """Convert a dataclass object to a dictionary.
+    """Serialize a dataclass instance to a dictionary.
 
     Args:
-        obj: The object to convert
+        obj: The dataclass instance to serialize
 
     Returns:
-        Dictionary representation of the object, or None if obj is None
+        Dictionary representation of the dataclass, or None if not a dataclass
     """
-    if obj is None:
-        return None
-    if not hasattr(obj, "__dataclass_fields__"):
-        return obj if isinstance(obj, dict) else None
-    result: Dict[str, Any] = {}
-    try:
-        dataclass_fields = fields(obj)
-    except TypeError:
+    if not is_dataclass(obj):
         return None
 
-    for field in dataclass_fields:
+    result: Dict[str, Any] = {}
+    for field in fields(obj):
         value = getattr(obj, field.name)
-        if hasattr(value, "__dataclass_fields__"):
-            result[field.name] = serialize_dataclass(value)
+        if is_dataclass(value):
+            # Recursively serialize nested dataclasses
+            serialized = serialize_dataclass(value)
+            if serialized is not None:
+                result[field.name] = serialized
         elif isinstance(value, list):
+            # Handle lists of dataclasses or other values
             result[field.name] = [
                 (
-                    serialize_dataclass(item)
-                    if hasattr(item, "__dataclass_fields__")
+                    cast(Dict[str, Any], serialize_dataclass(item))
+                    if is_dataclass(item)
                     else item
                 )
                 for item in value
             ]
         else:
             result[field.name] = value
+
     return result

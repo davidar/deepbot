@@ -17,7 +17,7 @@ from reactions import ReactionManager
 from reminder_manager import reminder_manager
 from tools import tool_registry
 from user_management import UserManager
-from utils import get_channel_name
+from utils.discord_utils import get_channel_name
 
 # Set up logging
 logging.basicConfig(

@@ -1,7 +1,6 @@
 """LLM streaming response handling."""
 
 import asyncio
-import datetime
 import json
 import logging
 from enum import Enum
@@ -18,6 +17,7 @@ from typing import (
 )
 
 import ollama
+import pendulum
 from discord import ClientUser, Message
 from discord.errors import Forbidden, NotFound
 from ollama import ChatResponse
@@ -631,10 +631,7 @@ class LLMResponseHandler:
         original_message: Message,
         reminder_content: str,
     ) -> None:
-        """Add a reminder to the response queue with special context.
-
-        This method adds the original message to the queue and stores
-        reminder metadata separately, keyed by the message ID.
+        """Add a reminder message to the response queue.
 
         Args:
             channel_id: The Discord channel ID
@@ -648,7 +645,7 @@ class LLMResponseHandler:
         self.reminder_metadata[original_message.id] = {
             "is_reminder": True,
             "content": reminder_content,
-            "triggered_at": datetime.datetime.now().isoformat(),
+            "triggered_at": pendulum.now("UTC").isoformat(),
             "user_id": original_message.author.id,
             "user_name": original_message.author.display_name,
         }
@@ -683,7 +680,7 @@ class LLMResponseHandler:
         # Get reminder details
         reminder_content = reminder_metadata.get("content", "")
         triggered_at = reminder_metadata.get(
-            "triggered_at", datetime.datetime.now().isoformat()
+            "triggered_at", pendulum.now("UTC").isoformat()
         )
 
         # Create a tool call message for the reminder

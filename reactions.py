@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from discord import Message, Reaction, User
 
-from utils import get_channel_name, get_server_name
+from utils.discord_utils import get_channel_name, get_server_name
 
 # Set up logging
 logger = logging.getLogger("deepbot.reactions")

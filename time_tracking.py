@@ -2,38 +2,27 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import List
+
+import pendulum
+from pendulum import DateTime, Duration
 
 # Set up logging
 logger = logging.getLogger("deepbot.time_tracking")
-
-
-def ensure_utc(dt: datetime) -> datetime:
-    """Ensure a datetime is timezone-aware in UTC.
-
-    Args:
-        dt: datetime object, naive or aware
-
-    Returns:
-        datetime object with UTC timezone
-    """
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 @dataclass
 class TimeRange:
     """Represents a range of time with start and end points."""
 
-    start: datetime
-    end: datetime
+    start: DateTime
+    end: DateTime
 
     def __post_init__(self) -> None:
-        """Ensure start and end are timezone-aware."""
-        self.start = ensure_utc(self.start)
-        self.end = ensure_utc(self.end)
+        """Ensure start and end are timezone-aware UTC."""
+        # Convert to UTC if needed
+        self.start = pendulum.instance(self.start).in_timezone("UTC")
+        self.end = pendulum.instance(self.end).in_timezone("UTC")
 
     def overlaps(self, other: "TimeRange") -> bool:
         """Check if this range overlaps with another range."""
@@ -55,7 +44,7 @@ class ChannelMetadata:
     channel_id: str
     known_ranges: List[TimeRange]
     gaps: List[TimeRange]
-    last_sync: datetime
+    last_sync: DateTime
 
     def add_known_range(self, new_range: TimeRange) -> None:
         """Add a new known range, merging with existing ranges if they overlap.
@@ -99,13 +88,13 @@ class ChannelMetadata:
 
             # Check if there's a gap between current and next range
             # Use a small threshold (1 second) to avoid gaps due to timestamp rounding
-            if (next_range.start - current.end) > timedelta(seconds=1):
+            if (next_range.start - current.end) > Duration(seconds=1):
                 self.gaps.append(TimeRange(start=current.end, end=next_range.start))
 
         # Sort gaps by start time
         self.gaps.sort(key=lambda r: r.start)
 
-    def get_recent_gaps(self, time_window: timedelta) -> List[TimeRange]:
+    def get_recent_gaps(self, time_window: Duration) -> List[TimeRange]:
         """Get gaps that overlap with the recent time window.
 
         Args:
@@ -114,6 +103,8 @@ class ChannelMetadata:
         Returns:
             List of gaps within the time window
         """
-        now = datetime.now(timezone.utc)
-        recent_window = TimeRange(start=now - time_window, end=now)
+        now = pendulum.now("UTC")
+        recent_window = TimeRange(
+            start=now.subtract(seconds=time_window.in_seconds()), end=now
+        )
         return [gap for gap in self.gaps if gap.overlaps(recent_window)]

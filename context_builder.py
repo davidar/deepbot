@@ -1,6 +1,5 @@
 """Context building for LLM interactions."""
 
-import datetime
 import logging
 from typing import (
     TYPE_CHECKING,
@@ -13,9 +12,11 @@ from typing import (
     cast,
 )
 
+import pendulum
 from discord import Message
 from discord.ext import commands
 from ollama import Message as LLMMessage
+from pendulum import DateTime
 
 import config
 import example_conversation
@@ -69,7 +70,7 @@ class ContextBuilder:
         """
         self.reaction_manager = reaction_manager
         self.message_store = message_store
-        self._reset_timestamps: dict[int, datetime.datetime] = {}
+        self._reset_timestamps: dict[int, DateTime] = {}
         self._command_names: set[str] = set()
 
     def set_bot(self, bot: commands.Bot) -> None:
@@ -81,7 +82,7 @@ class ContextBuilder:
         self._command_names = {cmd.name for cmd in bot.commands}
         logger.info(f"Updated command names: {self._command_names}")
 
-    def reset_history_from(self, channel_id: int, timestamp: datetime.datetime) -> None:
+    def reset_history_from(self, channel_id: int, timestamp: DateTime) -> None:
         """Reset message history to only include messages after the given timestamp.
 
         Args:
@@ -289,7 +290,7 @@ class ContextBuilder:
         """
         # Format the complete prompt with server name, time and reactions
         server_name = get_server_name(channel)
-        current_time = datetime.datetime.now().strftime("%A, %B %d, %Y")
+        current_time = pendulum.now("UTC").strftime("%A, %B %d, %Y")
 
         prompt = [
             f"# Discord Server: {server_name}",

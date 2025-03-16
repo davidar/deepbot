@@ -1,10 +1,11 @@
 """Channel synchronization and gap filling for Discord messages."""
 
 import logging
-from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+import pendulum
 from discord import Message
+from pendulum import DateTime, Duration
 
 if TYPE_CHECKING:
     from discord.abc import MessageableChannel
@@ -13,7 +14,8 @@ from discord_types import StoredMessage
 from message_indexer import MessageIndexer
 from storage_manager import StorageManager
 from time_tracking import TimeRange
-from utils import get_channel_name
+from utils.discord_utils import get_channel_name
+from utils.time_utils import ensure_datetime, parse_datetime, to_pendulum
 
 # Set up logging
 logger = logging.getLogger("deepbot.sync_manager")
@@ -59,7 +61,7 @@ class SyncManager:
         message_count = 0
         for gap in recent_gaps:
             logger.info(
-                f"Fetching messages from {gap.start.isoformat()} to {gap.end.isoformat()}"
+                f"Fetching messages from {gap.start.to_iso8601_string()} to {gap.end.to_iso8601_string()}"
             )
             async for message in channel.history(
                 after=gap.start, before=gap.end, limit=None
@@ -80,7 +82,7 @@ class SyncManager:
         channel: "MessageableChannel",
         channel_name: str,
         channel_id: str,
-        latest_time: datetime,
+        latest_time: DateTime,
     ) -> None:
         """Sync recent messages if we're behind.
 
@@ -90,11 +92,9 @@ class SyncManager:
             channel_id: The channel ID
             latest_time: Timestamp of the latest message
         """
-        now = datetime.now(timezone.utc)
+        now = pendulum.now("UTC")
         time_since_last = now - latest_time
-        if time_since_last > timedelta(
-            minutes=5
-        ):  # If we're more than 5 minutes behind
+        if time_since_last > Duration(minutes=5):  # If we're more than 5 minutes behind
             logger.info(f"Syncing recent messages for channel {channel_name}")
             await self.sync_channel(channel, overlap_minutes=5)
 
@@ -121,7 +121,7 @@ class SyncManager:
                 return
 
             # Check for gaps in the last 24 hours
-            recent_window = timedelta(hours=24)
+            recent_window = Duration(hours=24)
             recent_gaps = metadata.get_recent_gaps(recent_window)
 
             if recent_gaps:
@@ -130,7 +130,7 @@ class SyncManager:
                 # No gaps, but we should still check if we need to sync recent messages
                 messages = self.storage_manager.get_channel_messages(channel_id)
                 if messages:
-                    latest_time = datetime.fromisoformat(messages[-1].timestamp)
+                    latest_time = parse_datetime(messages[-1].timestamp)
                     await self._sync_recent_messages(
                         channel, channel_name, channel_id, latest_time
                     )
@@ -169,7 +169,7 @@ class SyncManager:
     async def _sync_messages_after(
         self,
         channel: "MessageableChannel",
-        sync_after: datetime,
+        sync_after: DateTime,
         channel_id: str,
         channel_name: str,
     ) -> None:
@@ -185,9 +185,9 @@ class SyncManager:
         message_count = 0
         new_messages = 0
         updated_messages = 0
-        last_log_time = datetime.now(timezone.utc)
+        last_log_time = pendulum.now("UTC")
 
-        logger.info(f"Syncing messages after {sync_after.isoformat()}")
+        logger.info(f"Syncing messages after {sync_after.to_iso8601_string()}")
 
         # Fetch messages after the sync point
         async for message in channel.history(after=sync_after, limit=None):
@@ -196,9 +196,10 @@ class SyncManager:
 
             if stored_msg:
                 # Message exists - update it if it's been edited or has reactions
-                if message.edited_at and (
+                edited_at = to_pendulum(message.edited_at)
+                if edited_at and (
                     not stored_msg.timestampEdited
-                    or message.edited_at.isoformat() != stored_msg.timestampEdited
+                    or edited_at.to_iso8601_string() != stored_msg.timestampEdited
                 ):
                     # Message was edited - update it
                     await self.add_message(message)
@@ -213,8 +214,8 @@ class SyncManager:
                 new_messages += 1
 
             # Log progress every 5 seconds
-            now = datetime.now(timezone.utc)
-            if (now - last_log_time).total_seconds() >= 5:
+            now = pendulum.now("UTC")
+            if (now - last_log_time).in_seconds() >= 5:
                 logger.info(
                     f"Progress: processed {message_count} messages "
                     f"({new_messages} new, {updated_messages} updated)"
@@ -241,7 +242,7 @@ class SyncManager:
         """
         logger.info("No existing messages found - initializing channel history")
         message_count = 0
-        last_log_time = datetime.now(timezone.utc)
+        last_log_time = pendulum.now("UTC")
 
         # Start from the most recent message
         async for message in channel.history(limit=None):
@@ -249,8 +250,8 @@ class SyncManager:
             await self.add_message(message)
 
             # Log progress every 5 seconds
-            now = datetime.now(timezone.utc)
-            if (now - last_log_time).total_seconds() >= 5:
+            now = pendulum.now("UTC")
+            if (now - last_log_time).in_seconds() >= 5:
                 logger.info(
                     f"Initial sync progress: {message_count} messages downloaded"
                 )
@@ -263,10 +264,12 @@ class SyncManager:
             last_msg = messages[-1]
             metadata = self.storage_manager.get_channel_metadata(channel_id)
             if metadata:
+                first_time = ensure_datetime(parse_datetime(first_msg.timestamp))
+                last_time = ensure_datetime(parse_datetime(last_msg.timestamp))
                 metadata.add_known_range(
                     TimeRange(
-                        start=datetime.fromisoformat(first_msg.timestamp),
-                        end=datetime.fromisoformat(last_msg.timestamp),
+                        start=first_time,
+                        end=last_time,
                     )
                 )
 
@@ -301,12 +304,15 @@ class SyncManager:
                 return
 
             messages = self.storage_manager.get_channel_messages(channel_id)
-            now = datetime.now(timezone.utc)
+            now = pendulum.now("UTC")
 
             if messages:
                 # Add overlap period to catch any edits/reactions on recent messages
-                latest_time = datetime.fromisoformat(messages[-1].timestamp)
-                sync_after = latest_time - timedelta(minutes=overlap_minutes)
+                latest_time = ensure_datetime(parse_datetime(messages[-1].timestamp))
+                # Ensure we get a DateTime back from subtract by using instance()
+                sync_after = pendulum.instance(
+                    latest_time.subtract(minutes=overlap_minutes)
+                )
                 await self._sync_messages_after(
                     channel, sync_after, channel_id, channel_name
                 )
