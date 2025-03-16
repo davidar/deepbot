@@ -4,7 +4,7 @@ import datetime
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import discord
 from discord import DMChannel, GroupChannel, TextChannel
@@ -137,6 +137,121 @@ class ReminderManager:
 
         return due_reminders
 
+    async def _get_channel(
+        self, bot: discord.Client, channel_id: int, reminder_id: str
+    ) -> Optional[Union[TextChannel, DMChannel, GroupChannel]]:
+        """Get the channel for sending a reminder.
+
+        Args:
+            bot: The Discord bot instance
+            channel_id: The channel ID
+            reminder_id: The reminder ID for logging
+
+        Returns:
+            The channel if found and valid, None otherwise
+        """
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            logger.warning(f"Channel {channel_id} not found for reminder {reminder_id}")
+            return None
+
+        if not isinstance(channel, (TextChannel, DMChannel, GroupChannel)):
+            logger.warning(f"Channel {channel_id} is not a text channel")
+            return None
+
+        return channel
+
+    async def _fetch_original_message(
+        self,
+        channel: Union[TextChannel, DMChannel, GroupChannel],
+        message_id: Optional[int],
+        reminder_id: str,
+    ) -> Optional[discord.Message]:
+        """Fetch the original message that set the reminder.
+
+        Args:
+            channel: The Discord channel
+            message_id: The message ID, if any
+            reminder_id: The reminder ID for logging
+
+        Returns:
+            The original message if found, None otherwise
+        """
+        if not message_id:
+            return None
+
+        try:
+            return await channel.fetch_message(message_id)
+        except Exception as e:
+            logger.warning(
+                f"Could not fetch original message for reminder {reminder_id}: {str(e)}"
+            )
+            return None
+
+    async def _get_user(
+        self, bot: discord.Client, user_id: int, reminder_id: str
+    ) -> Optional[discord.User]:
+        """Get the user who set the reminder.
+
+        Args:
+            bot: The Discord bot instance
+            user_id: The user ID
+            reminder_id: The reminder ID for logging
+
+        Returns:
+            The user if found, None otherwise
+        """
+        user = bot.get_user(user_id)
+        if not user:
+            try:
+                user = await bot.fetch_user(user_id)
+            except Exception as e:
+                logger.warning(
+                    f"Could not fetch user for reminder {reminder_id}: {str(e)}"
+                )
+                return None
+        return user
+
+    async def _send_reminder(
+        self,
+        channel: Union[TextChannel, DMChannel, GroupChannel],
+        original_message: Optional[discord.Message],
+        user: Optional[discord.User],
+        user_id: int,
+        content: str,
+        reminder_id: str,
+    ) -> None:
+        """Send the reminder message.
+
+        Args:
+            channel: The Discord channel
+            original_message: The original message that set the reminder
+            user: The user who set the reminder
+            user_id: The user's ID
+            content: The reminder content
+            reminder_id: The reminder ID for logging
+        """
+        if self.llm_handler and original_message:
+            # Add the original message directly to the LLM queue with reminder context
+            self.llm_handler.add_reminder_to_queue(
+                channel.id, original_message, content
+            )
+            logger.info(f"Added reminder {reminder_id} to LLM queue with context")
+        else:
+            # Fallback if we don't have the original message or LLM handler
+            logger.warning(f"Using fallback for reminder {reminder_id}")
+
+            if original_message:
+                await original_message.reply(
+                    f"{user.mention if user else f'<@{user_id}>'} Reminder: {content}"
+                )
+            else:
+                await channel.send(
+                    f"{user.mention if user else f'<@{user_id}>'} Reminder: {content}"
+                )
+
+            logger.info(f"Sent fallback reminder {reminder_id} to channel {channel.id}")
+
     async def process_due_reminder(
         self, bot: discord.Client, reminder: Dict[str, Any]
     ) -> None:
@@ -150,67 +265,36 @@ class ReminderManager:
         channel_id = reminder["channel_id"]
         user_id = reminder["user_id"]
         content = reminder["content"]
-        message_id = reminder.get("message_id")
+
+        # Safely convert message_id to int
+        message_id_raw = reminder.get("message_id")
+        try:
+            message_id = int(message_id_raw) if message_id_raw is not None else None
+        except (ValueError, TypeError):
+            logger.warning(
+                f"Invalid message_id for reminder {reminder_id}: {message_id_raw}"
+            )
+            message_id = None
 
         try:
             # Get the channel
-            channel = bot.get_channel(channel_id)
+            channel = await self._get_channel(bot, channel_id, reminder_id)
             if not channel:
-                logger.warning(
-                    f"Channel {channel_id} not found for reminder {reminder_id}"
-                )
-                self.remove_reminder(reminder_id)
-                return
-
-            # Check if the channel is a text channel that supports sending messages
-            if not isinstance(channel, (TextChannel, DMChannel, GroupChannel)):
-                logger.warning(f"Channel {channel_id} is not a text channel")
                 self.remove_reminder(reminder_id)
                 return
 
             # Get the original message if possible
-            original_message = None
-            if message_id:
-                try:
-                    original_message = await channel.fetch_message(message_id)
-                except Exception as e:
-                    logger.warning(
-                        f"Could not fetch original message for reminder {reminder_id}: {str(e)}"
-                    )
+            original_message = await self._fetch_original_message(
+                channel, message_id, reminder_id
+            )
 
             # Get the user
-            user = bot.get_user(user_id)
-            if not user:
-                try:
-                    user = await bot.fetch_user(user_id)
-                except Exception as e:
-                    logger.warning(
-                        f"Could not fetch user for reminder {reminder_id}: {str(e)}"
-                    )
+            user = await self._get_user(bot, user_id, reminder_id)
 
-            # Process the reminder
-            if self.llm_handler and original_message:
-                # Add the original message directly to the LLM queue with reminder context
-                self.llm_handler.add_reminder_to_queue(
-                    channel_id, original_message, content
-                )
-                logger.info(f"Added reminder {reminder_id} to LLM queue with context")
-            else:
-                # Fallback if we don't have the original message or LLM handler
-                logger.warning(f"Using fallback for reminder {reminder_id}")
-
-                if original_message:
-                    await original_message.reply(
-                        f"{user.mention if user else f'<@{user_id}>'} Reminder: {content}"
-                    )
-                else:
-                    await channel.send(
-                        f"{user.mention if user else f'<@{user_id}>'} Reminder: {content}"
-                    )
-
-                logger.info(
-                    f"Sent fallback reminder {reminder_id} to channel {channel_id}"
-                )
+            # Send the reminder
+            await self._send_reminder(
+                channel, original_message, user, user_id, content, reminder_id
+            )
 
             # Remove the reminder after sending
             self.remove_reminder(reminder_id)

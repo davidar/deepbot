@@ -29,6 +29,12 @@ class _GroupedMessage(TypedDict):
     tool_calls: Optional[Sequence[LLMMessage.ToolCall]]
 
 
+class _GroupedMessageWithResponse(_GroupedMessage, total=False):
+    """_GroupedMessage with optional response field."""
+
+    _has_response: "_GroupedMessage"  # For tool messages with responses
+
+
 # Set up logging
 logger = logging.getLogger("deepbot.context")
 
@@ -122,6 +128,92 @@ class ContextBuilder:
         """
         return content.strip().startswith("-#")
 
+    def _handle_tool_message(
+        self, message: Message, content: str
+    ) -> Optional[_GroupedMessageWithResponse]:
+        """Handle a tool message and format it appropriately.
+
+        Args:
+            message: The Discord message
+            content: The cleaned message content
+
+        Returns:
+            Formatted message dict or None if message should be skipped
+        """
+        try:
+            # Parse the REPL-style tool message
+            result = parse_repl_tool_message(content)
+            if result:
+                tool_name, tool_args, response_data = result
+
+                # Create tool call message
+                tool_call_message = _GroupedMessageWithResponse(
+                    role="assistant",
+                    content="",  # Empty content for tool calls
+                    author_id=message.author.id,
+                    tool_calls=[
+                        LLMMessage.ToolCall(
+                            function=LLMMessage.ToolCall.Function(
+                                name=tool_name,
+                                arguments=tool_args,
+                            ),
+                        ),
+                    ],
+                )
+
+                # Create tool response message
+                tool_response_message = _GroupedMessage(
+                    role="tool",
+                    content=response_data,
+                    author_id=message.author.id,
+                    tool_calls=None,
+                )
+
+                # Add the response message
+                tool_call_message["_has_response"] = tool_response_message
+                return tool_call_message
+
+        except Exception as e:
+            logger.warning(f"Error parsing REPL tool message: {str(e)}")
+
+        # Fallback to treating as a regular message
+        return _GroupedMessageWithResponse(
+            role="assistant",
+            content=content,
+            author_id=message.author.id,
+            tool_calls=None,
+        )
+
+    def _handle_reply(self, message: Message, content: str) -> str:
+        """Handle a reply message by adding the referenced message as a quote.
+
+        Args:
+            message: The Discord message
+            content: The current message content
+
+        Returns:
+            The updated message content with the quote
+        """
+        if not message.reference or not message.reference.resolved:
+            return content
+
+        try:
+            referenced_message = message.reference.resolved
+            if isinstance(referenced_message, Message):
+                # Clean up the referenced message content
+                ref_content = clean_message_content(referenced_message)
+                if not referenced_message.author.bot:
+                    ref_content = (
+                        f"{referenced_message.author.display_name}: {ref_content}"
+                    )
+                # Add the quote block at the start of the message
+                return f"> {ref_content}\n\n{content}"
+        except AttributeError:
+            # If the referenced message is deleted or inaccessible, just continue without the quote
+            pass
+
+        return content
+
     def _format_message(self, message: Message) -> Optional[_GroupedMessage]:
         """Format a Discord message for the LLM context.
 
@@ -152,57 +244,7 @@ class ContextBuilder:
         if message.author.bot:
             # Check if this is a Python REPL-style tool message
             if is_tool_message(content):
-                try:
-                    # Use the parsing function for REPL-style messages
-                    result = parse_repl_tool_message(content)
-                    if result:
-                        tool_name, tool_args, response_data = result
-
-                        # First create a tool call message
-                        tool_call_message = _GroupedMessage(
-                            role="assistant",
-                            content="",  # Empty content for tool calls
-                            author_id=message.author.id,
-                            tool_calls=[
-                                LLMMessage.ToolCall(
-                                    function=LLMMessage.ToolCall.Function(
-                                        name=tool_name,
-                                        arguments=tool_args,
-                                    ),
-                                ),
-                            ],
-                        )
-
-                        # Then create a tool response message
-                        tool_response_message = _GroupedMessage(
-                            role="tool",
-                            content=response_data,
-                            author_id=message.author.id,
-                            tool_calls=None,
-                        )
-
-                        # Return the tool call message (the response will be handled separately)
-                        # We're using a special attribute to indicate this is part of a combined message
-                        tool_call_message["_has_response"] = tool_response_message  # type: ignore
-                        return tool_call_message
-                    else:
-                        # If parsing fails, treat as a regular message
-                        return _GroupedMessage(
-                            role="assistant",
-                            content=content,
-                            author_id=message.author.id,
-                            tool_calls=None,
-                        )
-                except Exception as e:
-                    logger.warning(f"Error parsing REPL tool message: {str(e)}")
-                    # Fallback to treating as a regular message
-                    return _GroupedMessage(
-                        role="assistant",
-                        content=content,
-                        author_id=message.author.id,
-                        tool_calls=None,
-                    )
-
+                return self._handle_tool_message(message, content)
             # Skip automated messages
             elif self.is_automated_message(content):
                 return None
@@ -211,22 +253,8 @@ class ContextBuilder:
         if not message.author.bot:
             content = f"{message.author.display_name}: {content}"
 
-        # If this is a reply, add the referenced message in a quote block
-        if message.reference and message.reference.resolved:
-            try:
-                referenced_message = message.reference.resolved
-                if isinstance(referenced_message, Message):
-                    # Clean up the referenced message content
-                    ref_content = clean_message_content(referenced_message)
-                    if not referenced_message.author.bot:
-                        ref_content = (
-                            f"{referenced_message.author.display_name}: {ref_content}"
-                        )
-                    # Add the quote block at the start of the message
-                    content = f"> {ref_content}\n\n{content}"
-            except AttributeError:
-                # If the referenced message is deleted or inaccessible, just continue without the quote
-                pass
+        # Handle replies
+        content = self._handle_reply(message, content)
 
         return _GroupedMessage(
             role="assistant" if message.author.bot else "user",
@@ -261,21 +289,19 @@ class ContextBuilder:
             content="\n".join(prompt),
         )
 
-    def build_context(
+    def _group_messages(
         self,
         messages: List[Message],
-        channel: "MessageableChannel",
         reference_message: Optional[Message] = None,
-    ) -> List[LLMMessage]:
-        """Build LLM context from a list of Discord messages.
+    ) -> List[_GroupedMessage]:
+        """Group messages by author and handle special cases.
 
         Args:
-            messages: List of Discord messages to build context from
-            channel: The Discord channel
+            messages: List of Discord messages to group
             reference_message: The message that triggered the current interaction
 
         Returns:
-            List of message dicts forming the LLM context
+            List of grouped messages
         """
         # Process messages in chronological order
         messages = sorted(messages, key=lambda m: m.created_at)
@@ -329,10 +355,17 @@ class ContextBuilder:
         if current_group is not None:
             grouped_messages.append(current_group)
 
-        # Get max_history from model options and apply limit to final context
-        max_history = config.load_model_options()["max_history"]
+        return grouped_messages
 
-        # Create the context
+    def _build_base_context(self, channel: "MessageableChannel") -> List[LLMMessage]:
+        """Build the base context with system prompt and example conversation.
+
+        Args:
+            channel: The Discord channel
+
+        Returns:
+            List of base context messages
+        """
         context: List[LLMMessage] = []
 
         # Add system prompt
@@ -352,6 +385,64 @@ class ContextBuilder:
             )
         )
 
+        return context
+
+    def _add_reference_message(
+        self,
+        context: List[LLMMessage],
+        reference_message: Message,
+    ) -> None:
+        """Add a reference message to the context.
+
+        Args:
+            context: The current context list
+            reference_message: The message to add
+        """
+        formatted_reference_message = self._format_message(reference_message)
+        if formatted_reference_message is None:
+            raise ValueError("Unable to format reference message")
+
+        # Add system message
+        context.append(
+            LLMMessage(
+                role="system",
+                content="The messages above provide context for the conversation. Respond to the message below.",
+            )
+        )
+
+        # Add reference message
+        context.append(
+            LLMMessage(
+                role=formatted_reference_message["role"],
+                content=formatted_reference_message["content"],
+            )
+        )
+
+    def build_context(
+        self,
+        messages: List[Message],
+        channel: "MessageableChannel",
+        reference_message: Optional[Message] = None,
+    ) -> List[LLMMessage]:
+        """Build LLM context from a list of Discord messages.
+
+        Args:
+            messages: List of Discord messages to build context from
+            channel: The Discord channel
+            reference_message: The message that triggered the current interaction
+
+        Returns:
+            List of message dicts forming the LLM context
+        """
+        # Group messages
+        grouped_messages = self._group_messages(messages, reference_message)
+
+        # Get max_history from model options
+        max_history = config.load_model_options()["max_history"]
+
+        # Build base context
+        context = self._build_base_context(channel)
+
         # Add conversation history
         for msg in grouped_messages[-max_history:]:
             context.append(
@@ -364,24 +455,6 @@ class ContextBuilder:
 
         # Add reference message if present
         if reference_message:
-            formatted_reference_message = self._format_message(reference_message)
-            if formatted_reference_message is None:
-                raise ValueError("Unable to format reference message")
-
-            # Add system message
-            context.append(
-                LLMMessage(
-                    role="system",
-                    content="The messages above provide context for the conversation. Respond to the message below.",
-                )
-            )
-
-            # Add reference message
-            context.append(
-                LLMMessage(
-                    role=formatted_reference_message["role"],
-                    content=formatted_reference_message["content"],
-                )
-            )
+            self._add_reference_message(context, reference_message)
 
         return context

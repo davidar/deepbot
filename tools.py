@@ -451,8 +451,39 @@ class ReminderTool(BaseTool):
 
         return response
 
-    def _parse_time_string(self, time_str: str) -> Optional[datetime.datetime]:
-        """Parse a time string into a datetime object.
+    def _parse_relative_time(self, time_str: str) -> Optional[datetime.datetime]:
+        """Parse a relative time string (e.g., 5m, 2h).
+
+        Args:
+            time_str: The time string to parse (e.g., "5m", "2h")
+
+        Returns:
+            A datetime object or None if parsing fails
+        """
+        if not time_str.endswith(("s", "m", "h", "d")):
+            return None
+
+        try:
+            value = int(time_str[:-1])
+            unit = time_str[-1]
+            now = datetime.datetime.now()
+
+            if unit == "s":
+                return now + datetime.timedelta(seconds=value)
+            elif unit == "m":
+                return now + datetime.timedelta(minutes=value)
+            elif unit == "h":
+                return now + datetime.timedelta(hours=value)
+            elif unit == "d":
+                return now + datetime.timedelta(days=value)
+        except ValueError:
+            logger.error(f"Could not parse relative time: {time_str}")
+            return None
+
+        return None
+
+    def _parse_absolute_time(self, time_str: str) -> Optional[datetime.datetime]:
+        """Parse an absolute time string.
 
         Args:
             time_str: The time string to parse
@@ -462,58 +493,59 @@ class ReminderTool(BaseTool):
         """
         now = datetime.datetime.now()
 
-        # Check for relative time format (e.g., 5m, 2h, 1d)
-        if time_str.endswith(("s", "m", "h", "d")):
-            try:
-                value = int(time_str[:-1])
-                unit = time_str[-1]
-
-                if unit == "s":
-                    return now + datetime.timedelta(seconds=value)
-                elif unit == "m":
-                    return now + datetime.timedelta(minutes=value)
-                elif unit == "h":
-                    return now + datetime.timedelta(hours=value)
-                elif unit == "d":
-                    return now + datetime.timedelta(days=value)
-            except ValueError:
-                logger.error(f"Could not parse relative time: {time_str}")
-                return None
-
-        # Try parsing as an absolute time
+        # Try ISO format first
         try:
-            # Try ISO format
             return datetime.datetime.fromisoformat(time_str)
         except ValueError:
             pass
 
-        try:
-            # Try common formats
-            for fmt in [
-                "%Y-%m-%d %H:%M",
-                "%Y-%m-%d %H:%M:%S",
-                "%m/%d/%Y %H:%M",
-                "%d/%m/%Y %H:%M",
-                "%H:%M",  # Today at the specified time
-            ]:
-                try:
-                    parsed_time = datetime.datetime.strptime(time_str, fmt)
+        # Try common formats
+        formats = [
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%m/%d/%Y %H:%M",
+            "%d/%m/%Y %H:%M",
+            "%H:%M",  # Today at the specified time
+        ]
 
-                    # If only time was provided, set the date to today
-                    if fmt == "%H:%M":
-                        parsed_time = parsed_time.replace(
-                            year=now.year, month=now.month, day=now.day
-                        )
+        for fmt in formats:
+            try:
+                parsed_time = datetime.datetime.strptime(time_str, fmt)
 
-                        # If the time has already passed today, set it to tomorrow
-                        if parsed_time < now:
-                            parsed_time += datetime.timedelta(days=1)
+                # If only time was provided, set the date to today
+                if fmt == "%H:%M":
+                    parsed_time = parsed_time.replace(
+                        year=now.year, month=now.month, day=now.day
+                    )
 
-                    return parsed_time
-                except ValueError:
-                    continue
-        except Exception as e:
-            logger.error(f"Error parsing absolute time: {str(e)}")
+                    # If the time has already passed today, set it to tomorrow
+                    if parsed_time < now:
+                        parsed_time += datetime.timedelta(days=1)
+
+                return parsed_time
+            except ValueError:
+                continue
+
+        return None
+
+    def _parse_time_string(self, time_str: str) -> Optional[datetime.datetime]:
+        """Parse a time string into a datetime object.
+
+        Args:
+            time_str: The time string to parse
+
+        Returns:
+            A datetime object or None if parsing fails
+        """
+        # Try parsing as relative time first
+        result = self._parse_relative_time(time_str)
+        if result:
+            return result
+
+        # Try parsing as absolute time
+        result = self._parse_absolute_time(time_str)
+        if result:
+            return result
 
         return None
 

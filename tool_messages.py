@@ -28,6 +28,55 @@ def format_tool_call_and_response(
     return f"```\n>>> {tool_name}({formatted_args})\n{response}\n```"
 
 
+def _parse_command(command: str) -> Optional[Tuple[str, str]]:
+    """Parse a command into tool name and args string.
+
+    Args:
+        command: The command string to parse
+
+    Returns:
+        A tuple of (tool_name, args_str) or None if parsing fails
+    """
+    if "(" not in command or ")" not in command:
+        return None
+
+    tool_name = command.split("(")[0].strip()
+    args_str = command.split("(", 1)[1].rsplit(")", 1)[0].strip()
+
+    return tool_name, args_str
+
+
+def _parse_args(args_str: str) -> Dict[str, Any]:
+    """Parse an argument string into a dictionary.
+
+    Args:
+        args_str: The argument string to parse
+
+    Returns:
+        A dictionary of argument key-value pairs
+    """
+    tool_args: Dict[str, Any] = {}
+    if not args_str:
+        return tool_args
+
+    # This is a simplified parser and may not handle all Python syntax correctly
+    for arg_pair in args_str.split(","):
+        if "=" in arg_pair:
+            key, value = arg_pair.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            # Try to convert to appropriate types
+            try:
+                # Try to eval the value (handles strings, numbers, booleans, etc.)
+                tool_args[key] = eval(value)
+            except (SyntaxError, NameError):
+                # Keep as string if eval fails due to syntax or undefined names
+                tool_args[key] = value
+
+    return tool_args
+
+
 def parse_repl_tool_message(content: str) -> Optional[Tuple[str, Dict[str, Any], str]]:
     """Parse a Python REPL-style tool message.
 
@@ -52,30 +101,15 @@ def parse_repl_tool_message(content: str) -> Optional[Tuple[str, Dict[str, Any],
         command = parts[0].strip(">>> ").strip()
         response = parts[1].strip()
 
-        # Parse the function call
-        if "(" not in command or ")" not in command:
+        # Parse the command into tool name and args string
+        command_parts = _parse_command(command)
+        if command_parts is None:
             return None
 
-        tool_name = command.split("(")[0].strip()
-        args_str = command.split("(", 1)[1].rsplit(")", 1)[0].strip()
+        tool_name, args_str = command_parts
 
-        # Parse the args
-        tool_args: Dict[str, Any] = {}
-        if args_str:
-            # This is a simplified parser and may not handle all Python syntax correctly
-            for arg_pair in args_str.split(","):
-                if "=" in arg_pair:
-                    key, value = arg_pair.split("=", 1)
-                    key = key.strip()
-                    value = value.strip()
-
-                    # Try to convert to appropriate types
-                    try:
-                        # Try to eval the value (handles strings, numbers, booleans, etc.)
-                        tool_args[key] = eval(value)
-                    except (SyntaxError, NameError):
-                        # Keep as string if eval fails due to syntax or undefined names
-                        tool_args[key] = value
+        # Parse the args string into a dictionary
+        tool_args = _parse_args(args_str)
 
         return tool_name, tool_args, response
     except Exception as e:

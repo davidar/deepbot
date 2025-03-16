@@ -2,7 +2,7 @@
 
 import json
 import os
-from typing import Dict, FrozenSet, TypedDict, Union, cast
+from typing import Dict, FrozenSet, Type, TypedDict, Union, cast, get_type_hints
 
 from dotenv import load_dotenv
 
@@ -50,17 +50,31 @@ MODEL_NAME = "mistral-small"
 
 # Load model options from JSON
 def load_model_options() -> ModelOptions:
+    """Load model options from JSON file.
+
+    Returns:
+        ModelOptions: The loaded model options
+    """
     with open("model_options.json", "r") as f:
         return cast(ModelOptions, json.load(f))
 
 
 def save_model_options(options: ModelOptions) -> None:
+    """Save model options to JSON file.
+
+    Args:
+        options: The model options to save
+    """
     with open("model_options.json", "w") as f:
         json.dump(options, f, indent=4)
 
 
 def get_ollama_options() -> Dict[str, Union[float, int]]:
-    """Get options to pass to Ollama by excluding application-specific options."""
+    """Get options to pass to Ollama by excluding application-specific options.
+
+    Returns:
+        Dict[str, Union[float, int]]: The Ollama-specific options
+    """
     options = load_model_options()
     ollama_options: Dict[str, Union[float, int]] = {
         k: cast(Union[float, int], v)
@@ -68,3 +82,13 @@ def get_ollama_options() -> Dict[str, Union[float, int]]:
         if k not in APP_SPECIFIC_OPTIONS
     }
     return ollama_options
+
+
+def get_model_option_types() -> Dict[str, Type[Union[float, int]]]:
+    """Get the types of model options.
+
+    Returns:
+        Dict[str, Type[Union[float, int]]]: A dictionary mapping option names to their types
+    """
+    type_hints = get_type_hints(ModelOptions)
+    return {k: v for k, v in type_hints.items()}

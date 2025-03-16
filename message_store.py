@@ -5,14 +5,26 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    TypeVar,
+    Union,
+    cast,
+)
 
+import discord
 from discord import Guild, Member, Message
 from discord import Role as DiscordRole
 from discord import TextChannel, User
 from discord.abc import GuildChannel
 from discord.emoji import Emoji
 from discord.partial_emoji import PartialEmoji
+from discord.sticker import Sticker, StickerItem
 
 from utils import get_channel_name
 
@@ -310,6 +322,197 @@ class StoredMessage:
     reference: Optional[MessageReference]
     inlineEmojis: List[InlineEmoji]
 
+    @staticmethod
+    def _convert_emoji(emoji: Union[Emoji, PartialEmoji, str]) -> Dict[str, Any]:
+        """Convert a Discord emoji to a dictionary format.
+
+        Args:
+            emoji: The Discord emoji to convert
+
+        Returns:
+            Dictionary representation of the emoji
+        """
+        if isinstance(emoji, (Emoji, PartialEmoji)):
+            return {
+                "id": str(emoji.id) if emoji.id else None,
+                "name": emoji.name,
+                "code": emoji.name,  # Add code field for consistency
+                "isAnimated": bool(
+                    emoji.animated if hasattr(emoji, "animated") else False
+                ),
+                "imageUrl": str(emoji.url) if hasattr(emoji, "url") else None,
+            }
+        else:  # Unicode emoji (str)
+            return {
+                "id": None,
+                "name": emoji,
+                "code": emoji,  # Add code field for consistency
+                "isAnimated": False,
+                "imageUrl": None,
+            }
+
+    @staticmethod
+    def _convert_embed(embed: discord.Embed) -> Dict[str, Any]:
+        """Convert a Discord embed to a dictionary format.
+
+        Args:
+            embed: The Discord embed to convert
+
+        Returns:
+            Dictionary representation of the embed
+        """
+        return {
+            "title": embed.title,
+            "type": embed.type,
+            "description": embed.description,
+            "url": embed.url,
+            "timestamp": _format_timestamp(embed.timestamp),
+            "color": embed.colour.value if embed.colour else None,
+            "footer": (
+                {
+                    "text": embed.footer.text if embed.footer else None,
+                    "iconUrl": embed.footer.icon_url if embed.footer else None,
+                }
+                if embed.footer
+                else None
+            ),
+            "image": (
+                {
+                    "url": embed.image.url,
+                    "proxyUrl": embed.image.proxy_url,
+                    "width": embed.image.width,
+                    "height": embed.image.height,
+                }
+                if embed.image
+                else None
+            ),
+            "thumbnail": (
+                {
+                    "url": embed.thumbnail.url,
+                    "proxyUrl": embed.thumbnail.proxy_url,
+                    "width": embed.thumbnail.width,
+                    "height": embed.thumbnail.height,
+                }
+                if embed.thumbnail
+                else None
+            ),
+            "video": (
+                {
+                    "url": embed.video.url,
+                    "width": embed.video.width,
+                    "height": embed.video.height,
+                }
+                if embed.video
+                else None
+            ),
+            "provider": (
+                {
+                    "name": embed.provider.name,
+                    "url": embed.provider.url,
+                }
+                if embed.provider
+                else None
+            ),
+            "author": (
+                {
+                    "name": embed.author.name,
+                    "url": embed.author.url,
+                    "iconUrl": embed.author.icon_url,
+                }
+                if embed.author
+                else None
+            ),
+            "fields": [
+                {
+                    "name": field.name,
+                    "value": field.value,
+                    "inline": field.inline,
+                }
+                for field in embed.fields
+            ],
+        }
+
+    @staticmethod
+    def _convert_sticker(sticker: Union[Sticker, StickerItem]) -> Dict[str, Any]:
+        """Convert a Discord sticker to a dictionary format.
+
+        Args:
+            sticker: The Discord sticker to convert (can be Sticker or StickerItem)
+
+        Returns:
+            Dictionary representation of the sticker
+        """
+        return {
+            "id": str(sticker.id),
+            "name": sticker.name,
+            "formatType": str(sticker.format),
+            "description": getattr(sticker, "description", None),
+            "url": str(sticker.url) if hasattr(sticker, "url") else None,
+        }
+
+    @staticmethod
+    def _parse_inline_emoji(content: str) -> List[InlineEmoji]:
+        """Parse inline emojis from message content.
+
+        Args:
+            content: The message content to parse
+
+        Returns:
+            List of parsed inline emojis
+        """
+        inline_emojis: List[InlineEmoji] = []
+        for emoji in content.split():
+            # Check if this is a custom emoji format <:name:id> or <a:name:id>
+            if emoji.startswith("<") and emoji.endswith(">") and ":" in emoji:
+                parts = emoji.strip("<>").split(":")
+                if len(parts) == 3:  # Animated or regular custom emoji
+                    is_animated = parts[0] == "a"
+                    name = parts[1]
+                    emoji_id = parts[2]
+                    inline_emojis.append(
+                        InlineEmoji(
+                            id=emoji_id,
+                            name=name,
+                            code=emoji,
+                            isAnimated=is_animated,
+                            imageUrl=f"https://cdn.discordapp.com/emojis/{emoji_id}.{'gif' if is_animated else 'png'}",
+                        )
+                    )
+        return inline_emojis
+
+    @staticmethod
+    async def _convert_reactions(message: Message) -> List[Dict[str, Any]]:
+        """Convert Discord message reactions to a dictionary format.
+
+        Args:
+            message: The Discord message with reactions
+
+        Returns:
+            List of reaction dictionaries
+        """
+        reactions: List[Dict[str, Any]] = []
+        for reaction in message.reactions:
+            emoji_data = StoredMessage._convert_emoji(reaction.emoji)
+
+            # Get users who reacted
+            users: List[Dict[str, Any]] = []
+            async for user in reaction.users():
+                if isinstance(user, Member):
+                    user_info = UserInfo.from_member(user)
+                else:
+                    user_info = UserInfo.from_user(user)
+                user_dict = serialize_dataclass(user_info)
+                if user_dict is not None:  # Add type check
+                    users.append(user_dict)
+
+            reaction_data: Dict[str, Any] = {
+                "emoji": emoji_data,
+                "count": reaction.count,
+                "users": users,
+            }
+            reactions.append(reaction_data)
+        return reactions
+
     @classmethod
     async def from_discord_message(cls, message: Message) -> "StoredMessage":
         """Create from a Discord message."""
@@ -354,154 +557,16 @@ class StoredMessage:
                 mentions.append(UserInfo.from_user(user))
 
         # Convert reactions
-        reactions: List[Dict[str, Any]] = []
-        for reaction in message.reactions:
-            emoji = reaction.emoji
-            # Handle both unicode emojis (str) and custom emojis (Emoji/PartialEmoji)
-            if isinstance(emoji, (Emoji, PartialEmoji)):
-                emoji_data: Dict[str, Any] = {
-                    "id": str(emoji.id) if emoji.id else None,
-                    "name": emoji.name,
-                    "code": emoji.name,  # Add code field for consistency
-                    "isAnimated": bool(
-                        emoji.animated if hasattr(emoji, "animated") else False
-                    ),
-                    "imageUrl": str(emoji.url) if hasattr(emoji, "url") else None,
-                }
-            else:  # Unicode emoji (str)
-                emoji_data = {
-                    "id": None,
-                    "name": emoji,
-                    "code": emoji,  # Add code field for consistency
-                    "isAnimated": False,
-                    "imageUrl": None,
-                }
-
-            # Get users who reacted
-            users: List[Dict[str, Any]] = []
-            async for user in reaction.users():
-                if isinstance(user, Member):
-                    user_info = UserInfo.from_member(user)
-                else:
-                    user_info = UserInfo.from_user(user)
-                user_dict = serialize_dataclass(user_info)
-                if user_dict is not None:  # Add type check
-                    users.append(user_dict)
-
-            reaction_data: Dict[str, Any] = {
-                "emoji": emoji_data,
-                "count": reaction.count,
-                "users": users,
-            }
-            reactions.append(reaction_data)
+        reactions = await cls._convert_reactions(message)
 
         # Convert embeds
-        embeds: List[Dict[str, Any]] = []
-        for embed in message.embeds:
-            embed_data: Dict[str, Any] = {
-                "title": embed.title,
-                "type": embed.type,
-                "description": embed.description,
-                "url": embed.url,
-                "timestamp": _format_timestamp(embed.timestamp),
-                "color": embed.colour.value if embed.colour else None,
-                "footer": (
-                    {
-                        "text": embed.footer.text if embed.footer else None,
-                        "iconUrl": embed.footer.icon_url if embed.footer else None,
-                    }
-                    if embed.footer
-                    else None
-                ),
-                "image": (
-                    {
-                        "url": embed.image.url,
-                        "proxyUrl": embed.image.proxy_url,
-                        "width": embed.image.width,
-                        "height": embed.image.height,
-                    }
-                    if embed.image
-                    else None
-                ),
-                "thumbnail": (
-                    {
-                        "url": embed.thumbnail.url,
-                        "proxyUrl": embed.thumbnail.proxy_url,
-                        "width": embed.thumbnail.width,
-                        "height": embed.thumbnail.height,
-                    }
-                    if embed.thumbnail
-                    else None
-                ),
-                "video": (
-                    {
-                        "url": embed.video.url,
-                        "width": embed.video.width,
-                        "height": embed.video.height,
-                    }
-                    if embed.video
-                    else None
-                ),
-                "provider": (
-                    {
-                        "name": embed.provider.name,
-                        "url": embed.provider.url,
-                    }
-                    if embed.provider
-                    else None
-                ),
-                "author": (
-                    {
-                        "name": embed.author.name,
-                        "url": embed.author.url,
-                        "iconUrl": embed.author.icon_url,
-                    }
-                    if embed.author
-                    else None
-                ),
-                "fields": [
-                    {
-                        "name": field.name,
-                        "value": field.value,
-                        "inline": field.inline,
-                    }
-                    for field in embed.fields
-                ],
-            }
-            embeds.append(embed_data)
+        embeds = [cls._convert_embed(embed) for embed in message.embeds]
 
         # Convert stickers
-        stickers: List[Dict[str, Any]] = []
-        for sticker in message.stickers:
-            sticker_data: Dict[str, Any] = {
-                "id": str(sticker.id),
-                "name": sticker.name,
-                "formatType": str(sticker.format),
-                # Some sticker types might not have description
-                "description": getattr(sticker, "description", None),
-                "url": str(sticker.url),
-            }
-            stickers.append(sticker_data)
+        stickers = [cls._convert_sticker(sticker) for sticker in message.stickers]
 
-        # Convert inline emojis (custom emojis in the message content)
-        inline_emojis: List[InlineEmoji] = []
-        for emoji in message.content.split():
-            # Check if this is a custom emoji format <:name:id> or <a:name:id>
-            if emoji.startswith("<") and emoji.endswith(">") and ":" in emoji:
-                parts = emoji.strip("<>").split(":")
-                if len(parts) == 3:  # Animated or regular custom emoji
-                    is_animated = parts[0] == "a"
-                    name = parts[1]
-                    emoji_id = parts[2]
-                    inline_emojis.append(
-                        InlineEmoji(
-                            id=emoji_id,
-                            name=name,
-                            code=emoji,
-                            isAnimated=is_animated,
-                            imageUrl=f"https://cdn.discordapp.com/emojis/{emoji_id}.{'gif' if is_animated else 'png'}",
-                        )
-                    )
+        # Convert inline emojis
+        inline_emojis = cls._parse_inline_emoji(message.content)
 
         # Convert message reference if it exists
         reference = None
@@ -645,6 +710,107 @@ class MessageStore:
         except Exception as e:
             logger.error(f"Error saving metadata for channel {channel_id}: {str(e)}")
 
+    def _load_guild_info(self, data: Dict[str, Any]) -> None:
+        """Load guild information from data.
+
+        Args:
+            data: The loaded JSON data
+        """
+        if not self._guild_info and "guild" in data and data["guild"]:
+            self._guild_info = GuildInfo(**data["guild"])
+
+    def _load_channel_info(self, channel_id: str, data: Dict[str, Any]) -> None:
+        """Load channel information from data.
+
+        Args:
+            channel_id: The channel ID
+            data: The loaded JSON data
+        """
+        if "channel" in data and data["channel"]:
+            self._channel_info[channel_id] = ChannelInfo(**data["channel"])
+
+    def _convert_roles(self, roles_data: List[Dict[str, Any]]) -> List[Role]:
+        """Convert role data to Role objects.
+
+        Args:
+            roles_data: List of role dictionaries
+
+        Returns:
+            List of Role objects
+        """
+        return [Role(**r) for r in roles_data]
+
+    def _convert_user_info(self, user_data: Dict[str, Any]) -> UserInfo:
+        """Convert user data to UserInfo object.
+
+        Args:
+            user_data: User data dictionary
+
+        Returns:
+            UserInfo object
+        """
+        roles_data = user_data.pop("roles", [])
+        roles = self._convert_roles(roles_data)
+
+        # Ensure nickname field exists
+        if "nickname" not in user_data:
+            user_data["nickname"] = None
+
+        return UserInfo(**user_data, roles=roles)
+
+    def _convert_message_data(self, msg_data: Dict[str, Any]) -> StoredMessage:
+        """Convert message data to StoredMessage object.
+
+        Args:
+            msg_data: Message data dictionary
+
+        Returns:
+            StoredMessage object
+        """
+        # Make a copy to avoid modifying the original
+        msg_data = msg_data.copy()
+
+        # Convert author
+        author_data = msg_data.pop("author")
+        author = self._convert_user_info(author_data)
+
+        # Convert mentions
+        mentions_data = msg_data.pop("mentions", [])
+        mentions = [self._convert_user_info(mention) for mention in mentions_data]
+
+        # Convert attachments and emojis
+        attachments = [Attachment(**a) for a in msg_data.pop("attachments", [])]
+        inline_emojis = [InlineEmoji(**e) for e in msg_data.pop("inlineEmojis", [])]
+
+        # Convert message reference if it exists
+        reference = None
+        if "reference" in msg_data:
+            reference_data = msg_data.pop("reference")
+            reference = MessageReference(**reference_data)
+
+        # Create and return the message
+        return StoredMessage(
+            **msg_data,
+            author=author,
+            mentions=mentions,
+            attachments=attachments,
+            inlineEmojis=inline_emojis,
+            reference=reference,
+        )
+
+    def _load_channel_messages(self, channel_id: str, data: Dict[str, Any]) -> None:
+        """Load messages for a channel.
+
+        Args:
+            channel_id: The channel ID
+            data: The loaded JSON data
+        """
+        messages: Dict[str, StoredMessage] = {}
+        for msg_data in data.get("messages", []):
+            stored_msg = self._convert_message_data(msg_data)
+            messages[stored_msg.id] = stored_msg
+        self._channel_messages[channel_id] = messages
+
     def _load_data(self) -> None:
         """Load message data from storage directory."""
         try:
@@ -654,72 +820,18 @@ class MessageStore:
                 ):
                     channel_id = filename[:-5]  # Remove .json
                     file_path = os.path.join(self.storage_dir, filename)
+
                     with open(file_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
 
-                        # Store guild info from first file we encounter
-                        if not self._guild_info and "guild" in data and data["guild"]:
-                            self._guild_info = GuildInfo(**data["guild"])
+                        # Load guild and channel info
+                        self._load_guild_info(data)
+                        self._load_channel_info(channel_id, data)
 
-                        # Store channel info
-                        if "channel" in data and data["channel"]:
-                            self._channel_info[channel_id] = ChannelInfo(
-                                **data["channel"]
-                            )
+                        # Load messages
+                        self._load_channel_messages(channel_id, data)
 
-                        # Store messages in a dictionary
-                        messages: Dict[str, StoredMessage] = {}
-                        for msg_data in data.get("messages", []):
-                            # Convert nested structures
-                            author_data = msg_data.pop("author")
-                            author_roles = [
-                                Role(**r) for r in author_data.pop("roles", [])
-                            ]
-                            # Ensure nickname field exists
-                            if "nickname" not in author_data:
-                                author_data["nickname"] = None
-                            author = UserInfo(**author_data, roles=author_roles)
-
-                            mentions_data = msg_data.pop("mentions", [])
-                            mentions: List[UserInfo] = []
-                            for mention in mentions_data:
-                                mention_roles = [
-                                    Role(**r) for r in mention.pop("roles", [])
-                                ]
-                                # Ensure nickname field exists for mentions
-                                if "nickname" not in mention:
-                                    mention["nickname"] = None
-                                mentions.append(
-                                    UserInfo(**mention, roles=mention_roles)
-                                )
-
-                            attachments = [
-                                Attachment(**a) for a in msg_data.pop("attachments", [])
-                            ]
-                            inline_emojis = [
-                                InlineEmoji(**e)
-                                for e in msg_data.pop("inlineEmojis", [])
-                            ]
-
-                            # Convert message reference if it exists
-                            reference = None
-                            if "reference" in msg_data:
-                                reference_data = msg_data.pop("reference")
-                                reference = MessageReference(**reference_data)
-
-                            # Create the message and store by ID
-                            stored_msg = StoredMessage(
-                                **msg_data,
-                                author=author,
-                                mentions=mentions,
-                                attachments=attachments,
-                                inlineEmojis=inline_emojis,
-                                reference=reference,
-                            )
-                            messages[stored_msg.id] = stored_msg
-
-                        self._channel_messages[channel_id] = messages
-                        # Load metadata for this channel
+                        # Load metadata
                         self._load_metadata(channel_id)
 
             logger.info(f"Loaded messages from {len(self._channel_messages)} channels")
@@ -740,7 +852,7 @@ class MessageStore:
             )
 
             # Ensure we have guild info
-            guild_data = None
+            guild_data: Optional[Dict[str, Optional[str]]] = None
             if self._guild_info:
                 guild_data = {
                     "id": self._guild_info.id,
@@ -749,7 +861,7 @@ class MessageStore:
                 }
 
             # Ensure we have channel info
-            channel_data = None
+            channel_data: Optional[Dict[str, Optional[str]]] = None
             if channel_id in self._channel_info:
                 channel_info = self._channel_info[channel_id]
                 channel_data = {
@@ -762,7 +874,7 @@ class MessageStore:
                 }
 
             # Read existing file to preserve any fields we don't modify
-            existing_data = {}
+            existing_data: Dict[str, Any] = {}
             if os.path.exists(file_path):
                 with open(file_path, "r", encoding="utf-8") as f:
                     try:
@@ -770,16 +882,17 @@ class MessageStore:
                     except json.JSONDecodeError:
                         pass
 
+            # Define the date range type
+            date_range = {"after": None, "before": None}
+
             # Merge with existing data, preserving fields we don't modify
-            data = {
+            data: Dict[str, Any] = {
                 **existing_data,
                 "guild": guild_data if guild_data else existing_data.get("guild"),
                 "channel": (
                     channel_data if channel_data else existing_data.get("channel")
                 ),
-                "dateRange": existing_data.get(
-                    "dateRange", {"after": None, "before": None}
-                ),
+                "dateRange": existing_data.get("dateRange", date_range),
                 "exportedAt": datetime.now(timezone.utc).isoformat(),
                 "messages": [serialize_dataclass(msg) for msg in sorted_messages],
                 "messageCount": len(sorted_messages),
@@ -866,6 +979,67 @@ class MessageStore:
             return messages[-limit:]
         return messages
 
+    async def _fill_gaps(
+        self,
+        channel: "MessageableChannel",
+        channel_name: str,
+        channel_id: str,
+        metadata: ChannelMetadata,
+        recent_gaps: List[TimeRange],
+    ) -> None:
+        """Fill gaps in message history.
+
+        Args:
+            channel: The Discord channel
+            channel_name: The channel name for logging
+            channel_id: The channel ID
+            metadata: The channel metadata
+            recent_gaps: List of gaps to fill
+        """
+        logger.info(
+            f"Found {len(recent_gaps)} gaps in recent history for channel {channel_name}"
+        )
+
+        # Fetch messages to fill the gaps
+        message_count = 0
+        for gap in recent_gaps:
+            logger.info(
+                f"Fetching messages from {gap.start.isoformat()} to {gap.end.isoformat()}"
+            )
+            async for message in channel.history(
+                after=gap.start, before=gap.end, limit=None
+            ):
+                await self.add_message(message)
+                message_count += 1
+            # Update known range for the gap we just filled
+            metadata.add_known_range(TimeRange(start=gap.start, end=gap.end))
+
+        if message_count > 0:
+            logger.info(f"Filled gaps with {message_count} messages")
+
+    async def _sync_recent_messages(
+        self,
+        channel: "MessageableChannel",
+        channel_name: str,
+        channel_id: str,
+        latest_time: datetime,
+    ) -> None:
+        """Sync recent messages if we're behind.
+
+        Args:
+            channel: The Discord channel
+            channel_name: The channel name for logging
+            channel_id: The channel ID
+            latest_time: Timestamp of the latest message
+        """
+        now = datetime.now(timezone.utc)
+        time_since_last = now - latest_time
+        if time_since_last > timedelta(
+            minutes=5
+        ):  # If we're more than 5 minutes behind
+            logger.info(f"Syncing recent messages for channel {channel_name}")
+            await self.sync_channel(channel, overlap_minutes=5)
+
     async def initialize_channel(self, channel: "MessageableChannel") -> None:
         """Initialize message history for a channel by fetching recent messages.
 
@@ -894,45 +1068,22 @@ class MessageStore:
                     )
 
             metadata = self._channel_metadata[channel_id]
-            now = datetime.now(timezone.utc)
 
             # Check for gaps in the last 24 hours
             recent_window = timedelta(hours=24)
             recent_gaps = metadata.get_recent_gaps(recent_window)
 
             if recent_gaps:
-                logger.info(
-                    f"Found {len(recent_gaps)} gaps in recent history for channel {channel_name}"
+                await self._fill_gaps(
+                    channel, channel_name, channel_id, metadata, recent_gaps
                 )
-
-                # Fetch messages to fill the gaps
-                message_count = 0
-                for gap in recent_gaps:
-                    logger.info(
-                        f"Fetching messages from {gap.start.isoformat()} to {gap.end.isoformat()}"
-                    )
-                    async for message in channel.history(
-                        after=gap.start, before=gap.end, limit=None
-                    ):
-                        await self.add_message(message)
-                        message_count += 1
-                    # Update known range for the gap we just filled
-                    metadata.add_known_range(TimeRange(start=gap.start, end=gap.end))
-
-                if message_count > 0:
-                    logger.info(f"Filled gaps with {message_count} messages")
             else:
                 # No gaps, but we should still check if we need to sync recent messages
                 latest_time = self._get_latest_message_time(channel_id)
                 if latest_time:
-                    time_since_last = now - latest_time
-                    if time_since_last > timedelta(
-                        minutes=5
-                    ):  # If we're more than 5 minutes behind
-                        logger.info(
-                            f"Syncing recent messages for channel {channel_name}"
-                        )
-                        await self.sync_channel(channel, overlap_minutes=5)
+                    await self._sync_recent_messages(
+                        channel, channel_name, channel_id, latest_time
+                    )
                 else:
                     # No messages at all, do an initial sync
                     logger.info(
@@ -980,6 +1131,117 @@ class MessageStore:
 
         return latest_time
 
+    async def _sync_messages_after(
+        self,
+        channel: "MessageableChannel",
+        sync_after: datetime,
+        channel_id: str,
+        channel_name: str,
+    ) -> None:
+        """Sync messages after a given timestamp.
+
+        Args:
+            channel: The Discord channel
+            sync_after: Timestamp to sync messages after
+            channel_id: The channel ID
+            channel_name: The channel name for logging
+        """
+        # Track progress
+        message_count = 0
+        new_messages = 0
+        updated_messages = 0
+        last_log_time = datetime.now(timezone.utc)
+
+        logger.info(f"Syncing messages after {sync_after.isoformat()}")
+
+        # Fetch messages after the sync point
+        async for message in channel.history(after=sync_after, limit=None):
+            message_count += 1
+            stored_msg = self.get_message(channel_id, str(message.id))
+
+            if stored_msg:
+                # Message exists - update it if it's been edited or has reactions
+                if message.edited_at and (
+                    not stored_msg.timestampEdited
+                    or message.edited_at.isoformat() != stored_msg.timestampEdited
+                ):
+                    # Message was edited - update it
+                    await self.add_message(message)
+                    updated_messages += 1
+                elif message.reactions:
+                    # Has reactions - update it
+                    await self.add_message(message)
+                    updated_messages += 1
+            else:
+                # New message - add it
+                await self.add_message(message)
+                new_messages += 1
+
+            # Log progress every 5 seconds
+            now = datetime.now(timezone.utc)
+            if (now - last_log_time).total_seconds() >= 5:
+                logger.info(
+                    f"Progress: processed {message_count} messages "
+                    f"({new_messages} new, {updated_messages} updated)"
+                )
+                last_log_time = now
+
+        logger.info(
+            f"Sync complete: processed {message_count} messages total "
+            f"({new_messages} new, {updated_messages} updated)"
+        )
+
+    async def _initial_sync(
+        self,
+        channel: "MessageableChannel",
+        channel_id: str,
+        channel_name: str,
+        metadata: ChannelMetadata,
+    ) -> None:
+        """Perform initial sync for a channel with no existing messages.
+
+        Args:
+            channel: The Discord channel
+            channel_id: The channel ID
+            channel_name: The channel name for logging
+            metadata: The channel metadata
+        """
+        logger.info("No existing messages found - initializing channel history")
+        message_count = 0
+        last_log_time = datetime.now(timezone.utc)
+
+        # Start from the most recent message
+        async for message in channel.history(limit=None):
+            message_count += 1
+            await self.add_message(message)
+
+            # Log progress every 5 seconds
+            now = datetime.now(timezone.utc)
+            if (now - last_log_time).total_seconds() >= 5:
+                logger.info(
+                    f"Initial sync progress: {message_count} messages downloaded"
+                )
+                last_log_time = now
+
+        # Update known range for initial sync
+        if message_count > 0:
+            first_msg = min(
+                (msg for msg in self._channel_messages[channel_id].values()),
+                key=lambda m: _parse_timestamp(m.timestamp),
+            )
+            last_msg = max(
+                (msg for msg in self._channel_messages[channel_id].values()),
+                key=lambda m: _parse_timestamp(m.timestamp),
+            )
+            metadata.add_known_range(
+                TimeRange(
+                    start=_parse_timestamp(first_msg.timestamp),
+                    end=_parse_timestamp(last_msg.timestamp),
+                )
+            )
+
+        logger.info(f"Initial sync complete: downloaded {message_count} messages")
+
     async def sync_channel(
         self, channel: "MessageableChannel", overlap_minutes: int = 180
     ) -> None:
@@ -1018,96 +1280,14 @@ class MessageStore:
                 sync_after = _ensure_utc(
                     latest_time - timedelta(minutes=overlap_minutes)
                 )
-
-                logger.info(
-                    f"Syncing messages after {sync_after.isoformat()} (with {overlap_minutes}m overlap)"
+                await self._sync_messages_after(
+                    channel, sync_after, channel_id, channel_name
                 )
-
-                # Track progress
-                message_count = 0
-                new_messages = 0
-                updated_messages = 0
-                last_log_time = datetime.now(timezone.utc)
-
-                # Fetch messages after the sync point
-                async for message in channel.history(after=sync_after, limit=None):
-                    message_count += 1
-                    stored_msg = self.get_message(channel_id, str(message.id))
-
-                    if stored_msg:
-                        # Message exists - update it if it's been edited or has reactions
-                        if message.edited_at and (
-                            not stored_msg.timestampEdited
-                            or message.edited_at.isoformat()
-                            != stored_msg.timestampEdited
-                        ):
-                            # Message was edited - update it
-                            await self.add_message(message)
-                            updated_messages += 1
-                        elif message.reactions:
-                            # Has reactions - update it
-                            await self.add_message(message)
-                            updated_messages += 1
-                    else:
-                        # New message - add it
-                        await self.add_message(message)
-                        new_messages += 1
-
-                    # Log progress every 5 seconds
-                    now = datetime.now(timezone.utc)
-                    if (now - last_log_time).total_seconds() >= 5:
-                        logger.info(
-                            f"Progress: processed {message_count} messages "
-                            f"({new_messages} new, {updated_messages} updated)"
-                        )
-                        last_log_time = now
-
                 # Update known range for this sync
                 metadata.add_known_range(TimeRange(start=sync_after, end=now))
-
-                logger.info(
-                    f"Sync complete: processed {message_count} messages total "
-                    f"({new_messages} new, {updated_messages} updated)"
-                )
             else:
                 # No existing messages - initialize the channel from newest to oldest
-                logger.info("No existing messages found - initializing channel history")
-                message_count = 0
-                last_log_time = datetime.now(timezone.utc)
-
-                # Start from the most recent message
-                async for message in channel.history(limit=None):
-                    message_count += 1
-                    await self.add_message(message)
-
-                    # Log progress every 5 seconds
-                    now = datetime.now(timezone.utc)
-                    if (now - last_log_time).total_seconds() >= 5:
-                        logger.info(
-                            f"Initial sync progress: {message_count} messages downloaded"
-                        )
-                        last_log_time = now
-
-                # Update known range for initial sync
-                if message_count > 0:
-                    first_msg = min(
-                        (msg for msg in self._channel_messages[channel_id].values()),
-                        key=lambda m: _parse_timestamp(m.timestamp),
-                    )
-                    last_msg = max(
-                        (msg for msg in self._channel_messages[channel_id].values()),
-                        key=lambda m: _parse_timestamp(m.timestamp),
-                    )
-                    metadata.add_known_range(
-                        TimeRange(
-                            start=_parse_timestamp(first_msg.timestamp),
-                            end=_parse_timestamp(last_msg.timestamp),
-                        )
-                    )
-
-                logger.info(
-                    f"Initial sync complete: downloaded {message_count} messages"
-                )
+                await self._initial_sync(channel, channel_id, channel_name, metadata)
 
             # Update last sync time
             metadata.last_sync = now
