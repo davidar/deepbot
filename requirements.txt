@@ -6,9 +6,15 @@ sseclient-py>=1.7.2
 llama-cpp-python>=0.3.7
 huggingface-hub>=0.16.4
 rich>=13.3.3
+ollama>=0.1.0
+
 # Core packages for local vector search
 llama-index-core>=0.10.0  # Base package with core functionality
 llama-index-embeddings-ollama>=0.1.0  # Ollama embeddings
 llama-index-llms-ollama>=0.1.0  # Ollama LLM
 llama-index-vector-stores-chroma>=0.1.0  # ChromaDB vector store
 chromadb>=0.4.22  # Local vector database
+
+# Testing dependencies
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
