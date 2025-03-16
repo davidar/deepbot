@@ -2,7 +2,16 @@
 
 import datetime
 import logging
-from typing import TYPE_CHECKING, List, Literal, Optional, Sequence, TypedDict
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    TypedDict,
+    cast,
+)
 
 from discord import Message
 from discord.ext import commands
@@ -10,10 +19,14 @@ from ollama import Message as LLMMessage
 
 import config
 import example_conversation
+from discord_types import StoredMessage
+from message_store import MessageStore
 from reactions import ReactionManager
 from system_prompt import load_system_prompt
 from tool_messages import is_tool_message, parse_repl_tool_message
 from utils import clean_message_content, get_server_name
+from utils.discord_utils import is_automated_message
+from utils.message_formatter import format_message_group
 
 if TYPE_CHECKING:
     from discord.abc import MessageableChannel
@@ -42,13 +55,17 @@ logger = logging.getLogger("deepbot.context")
 class ContextBuilder:
     """Builds LLM context from Discord messages."""
 
-    def __init__(self, reaction_manager: ReactionManager) -> None:
+    def __init__(
+        self, reaction_manager: ReactionManager, message_store: MessageStore
+    ) -> None:
         """Initialize the context builder.
 
         Args:
             reaction_manager: The reaction manager instance to use
+            message_store: The message store instance to use for searching
         """
         self.reaction_manager = reaction_manager
+        self.message_store = message_store
         self._reset_timestamps: dict[int, datetime.datetime] = {}
         self._command_names: set[str] = set()
 
@@ -115,18 +132,6 @@ class ContextBuilder:
                 return message.created_at < reference_message.created_at
 
         return True
-
-    @staticmethod
-    def is_automated_message(content: str) -> bool:
-        """Check if a message is an automated bot message.
-
-        Args:
-            content: The message content to check
-
-        Returns:
-            True if the message is automated (starts with -#), False otherwise
-        """
-        return content.strip().startswith("-#")
 
     def _handle_tool_message(
         self, message: Message, content: str
@@ -246,7 +251,7 @@ class ContextBuilder:
             if is_tool_message(content):
                 return self._handle_tool_message(message, content)
             # Skip automated messages
-            elif self.is_automated_message(content):
+            elif is_automated_message(content):
                 return None
 
         # Add username prefix if not a bot
@@ -263,11 +268,18 @@ class ContextBuilder:
             tool_calls=None,
         )
 
-    def get_system_prompt(self, channel: "MessageableChannel") -> LLMMessage:
+    async def get_system_prompt(
+        self,
+        channel: "MessageableChannel",
+        search_results: Optional[Dict[str, List[StoredMessage]]] = None,
+        search_query: Optional[str] = None,
+    ) -> LLMMessage:
         """Get the system prompt for a channel.
 
         Args:
             channel: The Discord channel
+            search_results: Optional dictionary of search results to include in the prompt
+            search_query: The search query that produced the results
 
         Returns:
             System prompt message dict
@@ -281,6 +293,23 @@ class ContextBuilder:
             f"# Current Time: {current_time}",
             "",
         ]
+
+        # Add search results if provided
+        if search_results and search_query:
+            prompt.append(
+                f"# Relevant Context from the channel history related to '{search_query}':"
+            )
+            prompt.append("")
+            for channel_id, messages in search_results.items():
+                for message in messages:
+                    # Format message without the -# prefix
+                    formatted_msg = format_message_group(
+                        message, channel_id, bot=None, use_prefix=False
+                    )
+                    prompt.append(formatted_msg)
+            prompt.append("")
+            prompt.append("# End of Relevant Context")
+            prompt.append("")
 
         prompt.extend(load_system_prompt())
 
@@ -357,68 +386,7 @@ class ContextBuilder:
 
         return grouped_messages
 
-    def _build_base_context(self, channel: "MessageableChannel") -> List[LLMMessage]:
-        """Build the base context with system prompt and example conversation.
-
-        Args:
-            channel: The Discord channel
-
-        Returns:
-            List of base context messages
-        """
-        context: List[LLMMessage] = []
-
-        # Add system prompt
-        context.append(self.get_system_prompt(channel))
-
-        # Add example conversation
-        context.extend(example_conversation.load_example_conversation())
-
-        # Add separator message
-        context.append(
-            LLMMessage(
-                role="system",
-                content=(
-                    "The messages above are a distant memory. "
-                    "You recall them, but they are not part of your current conversation."
-                ),
-            )
-        )
-
-        return context
-
-    def _add_reference_message(
-        self,
-        context: List[LLMMessage],
-        reference_message: Message,
-    ) -> None:
-        """Add a reference message to the context.
-
-        Args:
-            context: The current context list
-            reference_message: The message to add
-        """
-        formatted_reference_message = self._format_message(reference_message)
-        if formatted_reference_message is None:
-            raise ValueError("Unable to format reference message")
-
-        # Add system message
-        context.append(
-            LLMMessage(
-                role="system",
-                content="The messages above provide context for the conversation. Respond to the message below.",
-            )
-        )
-
-        # Add reference message
-        context.append(
-            LLMMessage(
-                role=formatted_reference_message["role"],
-                content=formatted_reference_message["content"],
-            )
-        )
-
-    def build_context(
+    async def build_context(
         self,
         messages: List[Message],
         channel: "MessageableChannel",
@@ -440,21 +408,49 @@ class ContextBuilder:
         # Get max_history from model options
         max_history = config.load_model_options()["max_history"]
 
-        # Build base context
-        context = self._build_base_context(channel)
+        # Search for relevant messages if there's a reference message
+        search_results = None
+        search_query = None
+        if reference_message:
+            search_query = clean_message_content(reference_message)
+            search_results = await self.message_store.search(search_query, top_k=5)
+
+        # Build base context with search results included in system prompt
+        context: List[LLMMessage] = []
+        system_prompt = await self.get_system_prompt(
+            channel, search_results, search_query
+        )
+        context.append(system_prompt)
+        context.extend(example_conversation.load_example_conversation())
+        context.append(
+            LLMMessage(
+                role="system",
+                content=(
+                    "The messages above are a distant memory. "
+                    "You recall them, but they are not part of your current conversation."
+                ),
+            )
+        )
 
         # Add conversation history
         for msg in grouped_messages[-max_history:]:
-            context.append(
-                LLMMessage(
-                    role=msg["role"],
-                    content=msg["content"],
-                    tool_calls=msg["tool_calls"],
-                )
-            )
+            context.append(cast(LLMMessage, msg))
 
         # Add reference message if present
         if reference_message:
-            self._add_reference_message(context, reference_message)
+            formatted_reference_message = self._format_message(reference_message)
+            if formatted_reference_message is None:
+                raise ValueError("Unable to format reference message")
+
+            # Add system message
+            context.append(
+                LLMMessage(
+                    role="system",
+                    content="The messages above provide context for the conversation. Respond to the message below.",
+                )
+            )
+
+            # Add reference message
+            context.append(cast(LLMMessage, formatted_reference_message))
 
         return context

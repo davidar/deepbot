@@ -117,3 +117,15 @@ def resolve_mentions(content: str, bot: commands.Bot) -> str:
         return f"@{user.name if user else 'unknown'}"
 
     return mention_pattern.sub(replace_mention, content)
+
+
+def is_automated_message(content: str) -> bool:
+    """Check if a message is an automated bot message.
+
+    Args:
+        content: The message content to check
+
+    Returns:
+        True if the message is automated (starts with -#), False otherwise
+    """
+    return content.strip().startswith("-#")

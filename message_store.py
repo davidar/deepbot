@@ -7,11 +7,11 @@ from typing import Any, Callable, Dict, List, Optional
 import discord
 from discord import Message
 
-from context_builder import ContextBuilder
 from discord_types import StoredMessage
 from message_indexer import MessageIndexer
 from storage_manager import StorageManager
 from sync_manager import SyncManager
+from utils.discord_utils import is_automated_message
 
 # Set up logging
 logger = logging.getLogger("deepbot.message_store")
@@ -150,9 +150,7 @@ class MessageStore:
 
             if message:
                 # Skip automated messages
-                if message.content and ContextBuilder.is_automated_message(
-                    message.content
-                ):
+                if message.content and is_automated_message(message.content):
                     logger.debug(f"Skipping automated message {message_id}")
                     continue
 

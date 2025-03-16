@@ -383,9 +383,12 @@ class LLMResponseHandler:
             logger.info(
                 f"Starting streaming response with {len(context)} context messages"
             )
-            logger.info(
-                f"Context: {json.dumps([m.model_dump(exclude_none=True) for m in context], indent=2)}"
-            )
+            # Convert context to JSON, handling both Pydantic models and dicts
+            context_json = [
+                msg.model_dump(exclude_none=True) if hasattr(msg, "model_dump") else msg
+                for msg in context
+            ]
+            logger.info(f"Context: {json.dumps(context_json, indent=2)}")
 
             # Get tools
             tools = self.tool_registry.get_tools()
@@ -492,7 +495,7 @@ class LLMResponseHandler:
                 await self._update_message_reactions(message)
 
                 # Build context for LLM
-                context = context_builder.build_context(
+                context = await context_builder.build_context(
                     message_history, message.channel, message
                 )
 
