@@ -47,7 +47,7 @@ class LineStatus(Enum):
 class LLMResponseHandler:
     """Handles streaming responses from the LLM."""
 
-    def __init__(self, api_client: ollama.Client, bot_user: ClientUser) -> None:
+    def __init__(self, api_client: ollama.AsyncClient, bot_user: ClientUser) -> None:
         """Initialize the LLM response handler.
 
         Args:
@@ -210,7 +210,7 @@ class LLMResponseHandler:
         self,
         context: List[LLMMessage],
         tools: List[ToolDefinition],
-    ) -> Iterator[ChatResponse]:
+    ) -> AsyncIterator[ChatResponse]:
         """Create a new chat stream.
 
         Args:
@@ -221,7 +221,7 @@ class LLMResponseHandler:
             An async generator that yields chunks from the LLM
         """
         logger.info("Creating new chat stream")
-        return self.api_client.chat(  # pyright: ignore
+        return await self.api_client.chat(  # pyright: ignore
             model=str(config.MODEL_NAME),
             messages=context,
             stream=True,
@@ -315,7 +315,7 @@ class LLMResponseHandler:
 
     async def _process_stream(
         self,
-        stream: Iterator[ChatResponse],
+        stream: AsyncIterator[ChatResponse],
         context: List[LLMMessage],
         tools: List[ToolDefinition],
         message: Message,
@@ -336,7 +336,7 @@ class LLMResponseHandler:
             Tuples of (LineStatus, content)
         """
         try:
-            for chunk in stream:
+            async for chunk in stream:
                 try:
                     # Log chunk
                     logger.debug(f"Received chunk type: {type(chunk)}")

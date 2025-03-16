@@ -43,8 +43,8 @@ class DeepBot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
 
         # Initialize Ollama client
-        self.api_client = ollama.Client(host=config.API_URL)
-        logger.info("Using Ollama API client")
+        self.api_client = ollama.AsyncClient(host=config.API_URL)
+        logger.info("Using Ollama AsyncClient")
 
         # Initialize message indexer for search functionality
         indexer = MessageIndexer(
