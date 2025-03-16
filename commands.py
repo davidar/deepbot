@@ -222,7 +222,7 @@ def _setup_search_commands(bot: commands.Bot, search_commands: SearchCommands) -
         query: str,
         channel: Optional[discord.TextChannel] = None,
         author: Optional[discord.Member] = None,
-        limit: int = 10,
+        limit: int = 7,
     ) -> None:
         """Search for messages using semantic search.
 
@@ -230,7 +230,7 @@ def _setup_search_commands(bot: commands.Bot, search_commands: SearchCommands) -
             query: The search query
             channel: Optional channel to filter results (mention the channel)
             author: Optional author to filter results (mention the user)
-            limit: Maximum number of results to return (default: 10)
+            limit: Maximum number of results to return
         """
         await search_commands.handle_search(ctx, query, channel, author, limit)
 

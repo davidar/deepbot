@@ -898,9 +898,9 @@ class SearchCommands:
         self,
         ctx: Context,
         query: str,
-        channel: Optional[discord.TextChannel] = None,
-        author: Optional[discord.Member] = None,
-        limit: int = 10,
+        channel: Optional[discord.TextChannel],
+        author: Optional[discord.Member],
+        limit: int,
     ) -> None:
         """Handle the search command.
 
