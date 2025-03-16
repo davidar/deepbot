@@ -40,8 +40,6 @@ load_dotenv()
 
 # Discord bot token
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-if not DISCORD_TOKEN:
-    raise ValueError("DISCORD_TOKEN environment variable is not set")
 
 # API configuration
 API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
