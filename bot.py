@@ -111,12 +111,12 @@ class DeepBot(commands.Bot):
         # Log intents for debugging
         logger.info(f"Bot intents: {self.intents}")
 
-        await self.change_presence(activity=discord.Game(name=f"with myself"))
+        await self.change_presence(activity=discord.Game(name="with myself"))
 
         for guild in self.guilds:
             logger.info(f"Connected to {guild.name}")
 
-        logger.info(f"Bot is ready!")
+        logger.info("Bot is ready!")
 
     async def close(self) -> None:
         """Close the bot and clean up resources."""

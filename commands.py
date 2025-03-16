@@ -104,7 +104,7 @@ def setup_commands(
 
                 await ctx.send(f"-# Updated option `{option_name}` to `{float_value}`")
             except ValueError:
-                await ctx.send(f"-# Invalid value, please provide a number")
+                await ctx.send("-# Invalid value, please provide a number")
             except KeyError as e:
                 await ctx.send(f"-# {str(e)}")
             except TypeError as e:

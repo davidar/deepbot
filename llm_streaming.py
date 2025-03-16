@@ -19,6 +19,7 @@ from typing import (
 
 import ollama
 from discord import ClientUser, Message
+from discord.errors import Forbidden, NotFound
 from ollama import ChatResponse
 from ollama import Message as LLMMessage
 
@@ -505,11 +506,11 @@ class LLMResponseHandler:
                 async for status, line in self._stream_response_lines(context, message):
                     # Check if this specific task has been told to shut up
                     if current_task in self.shutup_tasks:
-                        logger.info(f"Task was told to shut up, stopping response")
+                        logger.info("Task was told to shut up, stopping response")
                         break
 
                     if status == LineStatus.ACCUMULATING:
-                        logger.info(f"Accumulating line")
+                        logger.info("Accumulating line")
                         # Start typing indicator
                         async with message.channel.typing():
                             pass
@@ -547,8 +548,8 @@ class LLMResponseHandler:
         # Remove the thinking reaction
         try:
             await message.remove_reaction("💭", self.bot_user)
-        except:
-            # Reaction might not exist, that's okay
+        except (NotFound, Forbidden):
+            # Reaction might not exist or we might not have permission
             pass
 
     async def _handle_complete_message(
@@ -591,8 +592,8 @@ class LLMResponseHandler:
         # Remove the typing reaction
         try:
             await message.remove_reaction("⌨️", self.bot_user)
-        except:
-            # Reaction might not exist, that's okay
+        except (NotFound, Forbidden):
+            # Reaction might not exist or we might not have permission
             pass
 
         # Clean up any reminder metadata that might still exist

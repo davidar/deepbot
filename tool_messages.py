@@ -73,8 +73,8 @@ def parse_repl_tool_message(content: str) -> Optional[Tuple[str, Dict[str, Any],
                     try:
                         # Try to eval the value (handles strings, numbers, booleans, etc.)
                         tool_args[key] = eval(value)
-                    except:
-                        # Keep as string if eval fails
+                    except (SyntaxError, NameError):
+                        # Keep as string if eval fails due to syntax or undefined names
                         tool_args[key] = value
 
         return tool_name, tool_args, response

@@ -19,7 +19,6 @@ from discord.message import Message
 from message_store import (
     ChannelMetadata,
     MessageStore,
-    Role,
     StoredMessage,
     TimeRange,
     UserInfo,
