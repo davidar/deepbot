@@ -345,7 +345,10 @@ class ContextBuilder:
         context.append(
             LLMMessage(
                 role="system",
-                content="The messages above are a distant memory. You recall them, but they are not part of your current conversation.",
+                content=(
+                    "The messages above are a distant memory. "
+                    "You recall them, but they are not part of your current conversation."
+                ),
             )
         )
 

@@ -143,7 +143,10 @@ class UserManager:
         if restriction.consecutive_count >= restriction.consecutive_limit:
             return (
                 False,
-                f"You've sent {restriction.consecutive_count} consecutive messages. Please let others interact before sending more.",
+                (
+                    f"You've sent {restriction.consecutive_count} consecutive messages. "
+                    "Please let others interact before sending more."
+                ),
             )
 
         # Increment counter and allow message

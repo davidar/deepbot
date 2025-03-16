@@ -179,7 +179,9 @@ def setup_commands(
             file = discord.File("system_prompt.txt")
             await ctx.send("-# Current System Prompt:", file=file)
             await ctx.send(
-                "-# Use `prompt add <line>` to add a line, `prompt remove <line>` to remove a line, or `prompt trim` to trim to max length"
+                "-# Use `prompt add <line>` to add a line, "
+                "`prompt remove <line>` to remove a line, or "
+                "`prompt trim` to trim to max length"
             )
             return
 
@@ -267,7 +269,9 @@ def setup_commands(
             for i, pair in enumerate(pairs, 1):
                 messages.append(f"-# {i}. User: {pair.user} | Bot: {pair.assistant}")
             messages.append(
-                "-# Use `example add <user_msg> | <bot_msg>`, `example remove <number>`, or `example edit <number> <user_msg> | <bot_msg>` to modify"
+                "-# Use `example add <user_msg> | <bot_msg>`, "
+                "`example remove <number>`, or "
+                "`example edit <number> <user_msg> | <bot_msg>` to modify"
             )
 
             # Split into chunks if too long
@@ -403,7 +407,11 @@ def setup_commands(
                 return
 
         await ctx.send(
-            "-# Invalid command, use `example`, `example add <user_msg> | <bot_msg>`, `example remove <number>`, or `example edit <number> <user_msg> | <bot_msg>`"
+            "-# Invalid command, use:\n"
+            "-# `example` - List all examples\n"
+            "-# `example add <user_msg> | <bot_msg>` - Add a new example\n"
+            "-# `example remove <number>` - Remove an example\n"
+            "-# `example edit <number> <user_msg> | <bot_msg>` - Edit an example"
         )
 
     @bot.command(name="shutup")

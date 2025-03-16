@@ -99,13 +99,17 @@ class MessageHistoryManager:
             self._message_history[channel_id].sort(key=lambda m: m.created_at)
 
             logger.info(
-                f"Initialized history for channel {get_channel_name(channel)} with {len(self._message_history[channel_id])} messages"
+                "Initialized history for channel {} with {} messages".format(
+                    get_channel_name(channel), len(self._message_history[channel_id])
+                )
             )
             return True
 
         except Exception as e:
             logger.error(
-                f"Error initializing history for channel {get_channel_name(channel)}: {str(e)}"
+                "Error initializing history for channel {}: {}".format(
+                    get_channel_name(channel), str(e)
+                )
             )
             self._message_history[channel_id] = []
             return False

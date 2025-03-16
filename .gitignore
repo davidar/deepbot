@@ -42,7 +42,6 @@ ENV/
 
 # IDE files
 .idea/
-.vscode/
 *.swp
 *.swo
 *.bak*

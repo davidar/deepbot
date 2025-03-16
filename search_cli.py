@@ -118,7 +118,7 @@ def display_search_results(nodes: list[NodeWithScore]) -> None:
             text = text.split("Message: ", 1)[1].split("\n")[0]
 
         # Format attachments and embeds as metadata
-        extras = []
+        extras: list[str] = []
         if metadata.get("has_attachments"):
             extras.append("📎 has attachments")
         if metadata.get("has_embeds"):

@@ -712,7 +712,10 @@ class LLMResponseHandler:
                 f"I'll remind you about '{reminder_content}' at {triggered_at}.",
                 f"Waiting until {triggered_at} ...",
                 f"Waiting complete. The time is now {triggered_at}.",
-                f"Reminder triggered. You should now respond to the user's original message, to inform them that it is now time to '{reminder_content}'.",
+                (
+                    f"Reminder triggered. You should now respond to the user's original message, "
+                    f"to inform them that it is now time to '{reminder_content}'."
+                ),
             ]
         )
 

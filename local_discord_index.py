@@ -1,15 +1,17 @@
 """Local semantic search index for Discord messages."""
 
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Sequence, TypeVar
 
 import chromadb
 from llama_index.core import Document, Settings, VectorStoreIndex
 from llama_index.core.node_parser import SimpleNodeParser
 from llama_index.core.schema import NodeWithScore
-from llama_index.embeddings.ollama import OllamaEmbedding
-from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.embeddings.ollama import OllamaEmbedding  # type: ignore
+from llama_index.vector_stores.chroma import ChromaVectorStore  # type: ignore
 
 from message_store import MessageStore, StoredMessage
+
+T = TypeVar("T", bound=VectorStoreIndex)
 
 
 class LocalDiscordIndex:
@@ -42,7 +44,7 @@ class LocalDiscordIndex:
         vector_store = ChromaVectorStore(chroma_collection=self.chroma_collection)
 
         # Initialize or load index
-        self.index = VectorStoreIndex.from_vector_store(vector_store)
+        self.index: VectorStoreIndex = VectorStoreIndex.from_vector_store(vector_store)  # type: ignore[assignment]
         self.message_store = message_store
 
     def _message_to_text(self, message: StoredMessage) -> str:

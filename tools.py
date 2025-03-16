@@ -359,7 +359,10 @@ class ReminderTool(BaseTool):
             },
             "time": {
                 "type": "string",
-                "description": "When to send the reminder (e.g., '5m', '2h', '1d', or a specific time like '2023-12-31 23:59')",
+                "description": (
+                    "When to send the reminder (e.g., '5m', '2h', '1d', "
+                    "or a specific time like '2023-12-31 23:59')"
+                ),
             },
         },
         "required": ["content", "time"],
@@ -407,7 +410,11 @@ class ReminderTool(BaseTool):
         try:
             due_time = self._parse_time_string(time_str)
             if due_time is None:
-                error_response = f"Error: Could not parse time '{time_str}'. Please use formats like '5m', '2h', '1d', or a specific time like '2023-12-31 23:59'"
+                error_response = (
+                    f"Error: Could not parse time '{time_str}'. "
+                    "Please use formats like '5m', '2h', '1d', "
+                    "or a specific time like '2023-12-31 23:59'"
+                )
                 logger.error(error_response)
                 return error_response
         except Exception as e:
@@ -524,7 +531,11 @@ class SystemPromptTool(BaseTool):
         "properties": {
             "pattern": {
                 "type": "string",
-                "description": "The behavioral pattern or trait to remember (e.g., 'be more empathetic with new users', 'use more technical terms with experienced users')",
+                "description": (
+                    "The behavioral pattern or trait to remember (e.g., "
+                    "'be more empathetic with new users', "
+                    "'use more technical terms with experienced users')"
+                ),
             },
             "reason": {
                 "type": "string",
@@ -535,12 +546,18 @@ class SystemPromptTool(BaseTool):
     }
     examples: ClassVar[List[ToolExample]] = [
         ToolExample(
-            bot_message="Your questions about data structures have been really insightful. I notice you grasp technical concepts quickly, so let me adjust my responses accordingly.",
+            bot_message=(
+                "Your questions about data structures have been really insightful. "
+                "I notice you grasp technical concepts quickly, so let me adjust my responses accordingly."
+            ),
             tool_args={
                 "pattern": "use technical terminology when the context allows",
                 "reason": "user demonstrates strong technical understanding and prefers detailed explanations",
             },
-            response="I'll remember to *use technical terminology when appropriate* because *user demonstrates strong technical understanding and prefers detailed explanations*",
+            response=(
+                "I'll remember to *use technical terminology when appropriate* because "
+                "*user demonstrates strong technical understanding and prefers detailed explanations*"
+            ),
         ),
         ToolExample(
             bot_message="I see I've been a bit too verbose in my explanations. Let me make my responses more focused.",
@@ -548,16 +565,25 @@ class SystemPromptTool(BaseTool):
                 "pattern": "keep responses brief and to the point",
                 "reason": "noticed user engagement drops with longer responses",
             },
-            response="I'll remember to *keep responses brief and to the point* because *noticed user engagement drops with longer responses*",
+            response=(
+                "I'll remember to *keep responses brief and to the point* because "
+                "*noticed user engagement drops with longer responses*"
+            ),
         ),
         ToolExample(
             user_query="You're being too formal, can you be more casual?",
-            bot_message="You're right, I should loosen up a bit. Let me adjust my communication style.",
+            bot_message=(
+                "You're right, I should loosen up a bit. "
+                "Let me adjust my communication style."
+            ),
             tool_args={
                 "pattern": "use casual, conversational language",
                 "reason": "direct user feedback requesting more casual communication style",
             },
-            response="I'll remember to *use casual, conversational language* because *direct user feedback requesting more casual communication style*",
+            response=(
+                "I'll remember to *use casual, conversational language* because "
+                "*direct user feedback requesting more casual communication style*"
+            ),
         ),
     ]
 
@@ -623,29 +649,50 @@ class ExampleConversationTool(BaseTool):
     }
     examples: ClassVar[List[ToolExample]] = [
         ToolExample(
-            bot_message="That restaurant analogy for async/await really clicked! I should save this approach for explaining similar concepts.",
+            bot_message=(
+                "That restaurant analogy for async/await really clicked! "
+                "I should save this approach for explaining similar concepts."
+            ),
             tool_args={
                 "user_message": "Can you explain how async/await works?",
-                "bot_message": "think of it like a restaurant. async functions are like placing an order - you don't wait around, you get a promise (your receipt) that food will come. await is when you actually need the food to continue eating",
+                "bot_message": (
+                    "think of it like a restaurant. async functions are like placing an order - "
+                    "you don't wait around, you get a promise (your receipt) that food will come. "
+                    "await is when you actually need the food to continue eating"
+                ),
                 "reason": "Restaurant analogy effectively bridges abstract programming concept with everyday experience",
             },
             response="I'll remember this interaction pattern for similar situations in the future.",
         ),
         ToolExample(
-            user_query="That pencil vs pen analogy for let/const was perfect! Could you remember that?",
-            bot_message="Thanks! You're right, that analogy worked really well. I'll save it for future explanations.",
+            user_query=(
+                "That pencil vs pen analogy for let/const was perfect! Could you remember that?"
+            ),
+            bot_message=(
+                "Thanks! You're right, that analogy worked really well. "
+                "I'll save it for future explanations."
+            ),
             tool_args={
                 "user_message": "What's the difference between let and const in JavaScript?",
-                "bot_message": "think of let like a pencil note - you can erase and rewrite it. const is like using a pen - once you write it, that's it, no changing it",
+                "bot_message": (
+                    "think of let like a pencil note - you can erase and rewrite it. "
+                    "const is like using a pen - once you write it, that's it, no changing it"
+                ),
                 "reason": "Simple everyday object comparison that clearly illustrates mutability concept",
             },
             response="I'll remember this interaction pattern for similar situations in the future.",
         ),
         ToolExample(
-            bot_message="The way I handled that frustrated user seemed to work well - using humor to redirect to problem-solving. I should remember this strategy.",
+            bot_message=(
+                "The way I handled that frustrated user seemed to work well - "
+                "using humor to redirect to problem-solving. I should remember this strategy."
+            ),
             tool_args={
                 "user_message": "This code is completely broken! Who wrote this garbage?",
-                "bot_message": "hey, even Shakespeare wrote some rough drafts! let's look at what's actually going on and fix it together",
+                "bot_message": (
+                    "hey, even Shakespeare wrote some rough drafts! "
+                    "let's look at what's actually going on and fix it together"
+                ),
                 "reason": "Using humor to defuse tension while redirecting to constructive problem-solving",
             },
             response="I'll remember this interaction pattern for similar situations in the future.",
