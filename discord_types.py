@@ -1,9 +1,9 @@
 """Type definitions for Discord message storage."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, TypeVar, Union
 
 from discord import Embed, Emoji, Member, Message, PartialEmoji
 from discord import Role as DiscordRole
@@ -471,11 +471,14 @@ class StoredMessage:
         )
 
 
+T = TypeVar("T")
+
+
 def serialize_dataclass(obj: Any) -> Optional[Dict[str, Any]]:
-    """Serialize a dataclass to dict, preserving None values for certain fields.
+    """Convert a dataclass object to a dictionary.
 
     Args:
-        obj: The object to serialize
+        obj: The object to convert
 
     Returns:
         Dictionary representation of the object, or None if obj is None
@@ -483,28 +486,26 @@ def serialize_dataclass(obj: Any) -> Optional[Dict[str, Any]]:
     if obj is None:
         return None
     if not hasattr(obj, "__dataclass_fields__"):
-        return obj
+        return obj if isinstance(obj, dict) else None
     result: Dict[str, Any] = {}
-    fields = obj.__dataclass_fields__  # type: ignore
-    for field in fields:
-        value = getattr(obj, field)
-        # Always include certain fields, even if None
-        if value is not None or field in {
-            "color",
-            "timestampEdited",
-            "callEndedTimestamp",
-        }:
-            if hasattr(value, "__dataclass_fields__"):
-                result[field] = serialize_dataclass(value)
-            elif isinstance(value, list):
-                result[field] = [
-                    (
-                        serialize_dataclass(item)
-                        if hasattr(item, "__dataclass_fields__")
-                        else item
-                    )
-                    for item in value
-                ]
-            else:
-                result[field] = value
+    try:
+        dataclass_fields = fields(obj)
+    except TypeError:
+        return None
+
+    for field in dataclass_fields:
+        value = getattr(obj, field.name)
+        if hasattr(value, "__dataclass_fields__"):
+            result[field.name] = serialize_dataclass(value)
+        elif isinstance(value, list):
+            result[field.name] = [
+                (
+                    serialize_dataclass(item)
+                    if hasattr(item, "__dataclass_fields__")
+                    else item
+                )
+                for item in value
+            ]
+        else:
+            result[field.name] = value
     return result

@@ -72,7 +72,7 @@ class HistoryCommands:
 
         # Get the raw context that would be sent to the LLM
         messages = self.message_history.get_messages(channel_id)
-        context = self.context_builder.build_context(messages, ctx.channel)
+        context = await self.context_builder.build_context(messages, ctx.channel)
 
         # Convert to JSON
         json_data = json.dumps(

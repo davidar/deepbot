@@ -23,8 +23,13 @@ class ReminderManager:
     _instance = None
     REMINDERS_FILE = "reminders.json"
 
-    def __new__(cls):
-        """Ensure singleton pattern for ReminderManager."""
+    @classmethod
+    def __new__(cls) -> "ReminderManager":
+        """Ensure singleton pattern for ReminderManager.
+
+        Returns:
+            The singleton instance of ReminderManager
+        """
         if cls._instance is None:
             cls._instance = super(ReminderManager, cls).__new__(cls)
             cls._instance._initialized = False

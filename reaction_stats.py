@@ -4,7 +4,8 @@ import datetime
 import logging
 from typing import Dict, List, Tuple
 
-from message_store import MessageStore, StoredMessage
+from discord_types import StoredMessage
+from message_store import MessageStore
 
 # Set up logging
 logger = logging.getLogger("deepbot.reactions")

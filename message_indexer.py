@@ -8,8 +8,8 @@ from chromadb.config import Settings as ChromaSettings
 from llama_index.core import Document, Settings, VectorStoreIndex
 from llama_index.core.node_parser import SimpleNodeParser
 from llama_index.core.schema import NodeWithScore
-from llama_index.embeddings.ollama import OllamaEmbedding  # type: ignore
-from llama_index.vector_stores.chroma import ChromaVectorStore  # type: ignore
+from llama_index.embeddings.ollama import OllamaEmbedding  # pyright: ignore
+from llama_index.vector_stores.chroma import ChromaVectorStore  # pyright: ignore
 
 from discord_types import StoredMessage
 
@@ -50,7 +50,7 @@ class MessageIndexer:
         vector_store = ChromaVectorStore(chroma_collection=self.chroma_collection)
 
         # Initialize or load index
-        self.index: VectorStoreIndex = VectorStoreIndex.from_vector_store(vector_store)  # type: ignore[assignment]
+        self.index = VectorStoreIndex.from_vector_store(vector_store)  # pyright: ignore
 
     def message_to_text(self, message: StoredMessage) -> str:
         """Convert Discord message to searchable text.

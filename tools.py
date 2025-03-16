@@ -72,8 +72,13 @@ class ToolRegistry:
 
     _instance = None
 
-    def __new__(cls):
-        """Ensure singleton pattern for ToolRegistry."""
+    @classmethod
+    def __new__(cls) -> "ToolRegistry":
+        """Ensure singleton pattern for ToolRegistry.
+
+        Returns:
+            The singleton instance of ToolRegistry
+        """
         if cls._instance is None:
             cls._instance = super(ToolRegistry, cls).__new__(cls)
             cls._instance._initialized = False

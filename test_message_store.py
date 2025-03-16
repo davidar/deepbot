@@ -43,11 +43,11 @@ def normalize_json(data: Any) -> Any:
     if isinstance(data, dict):
         return {
             str(k): normalize_json(v)
-            for k, v in data.items()  # type: ignore
+            for k, v in data.items()  # pyright: ignore
             if k != "exportedAt"  # Skip this field as it changes
         }
     elif isinstance(data, list):
-        return [normalize_json(item) for item in data]  # type: ignore
+        return [normalize_json(item) for item in data]  # pyright: ignore
     else:
         return data
 

@@ -24,8 +24,11 @@ from message_store import MessageStore
 from reactions import ReactionManager
 from system_prompt import load_system_prompt
 from tool_messages import is_tool_message, parse_repl_tool_message
-from utils import clean_message_content, get_server_name
-from utils.discord_utils import is_automated_message
+from utils.discord_utils import (
+    clean_message_content,
+    get_server_name,
+    is_automated_message,
+)
 from utils.message_formatter import format_message_group
 
 if TYPE_CHECKING:
@@ -369,8 +372,7 @@ class ContextBuilder:
             if current_group is None:
                 current_group = formatted
             elif (
-                current_group["role"] == "assistant"
-                and formatted["role"] == "assistant"
+                current_group["role"] == formatted["role"] == "assistant"  # type: ignore
                 and current_group["author_id"] == formatted["author_id"]
             ):
                 # Add to current group for regular assistant messages from the same author
