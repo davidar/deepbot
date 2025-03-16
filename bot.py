@@ -11,6 +11,7 @@ from commands import setup_commands
 from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
 from message_history import MessageHistoryManager
+from message_indexer import MessageIndexer
 from message_store import MessageStore
 from reactions import ReactionManager
 from reminder_manager import reminder_manager
@@ -45,8 +46,18 @@ class DeepBot(commands.Bot):
         self.api_client = ollama.Client(host=config.API_URL)
         logger.info("Using Ollama API client")
 
-        # Initialize message store
-        self.message_store = MessageStore()
+        # Initialize message indexer for search functionality
+        indexer = MessageIndexer(
+            storage_path=config.SEARCH_INDEX_PATH,
+            model_name=config.EMBEDDING_MODEL_NAME,
+            base_url=config.API_URL,
+        )
+
+        # Initialize message store with search functionality
+        self.message_store = MessageStore(
+            data_dir=config.MESSAGE_STORE_DIR,
+            message_indexer=indexer,
+        )
 
     async def setup_hook(self) -> None:
         """Set up the bot's components after login."""
@@ -63,9 +74,10 @@ class DeepBot(commands.Bot):
         # Set the LLM handler for the reminder manager
         reminder_manager.set_llm_handler(self.llm_handler)
 
-        # Start the reminder check task
+        # Start background tasks
         self.check_reminders.start()
-        logger.info("Started reminder check task")
+        self.sync_messages.start()
+        logger.info("Started background tasks")
 
         # Log available tools
         logger.info(
@@ -98,11 +110,31 @@ class DeepBot(commands.Bot):
         except Exception as e:
             logger.error(f"Error checking reminders: {str(e)}")
 
+    @tasks.loop(minutes=30)
+    async def sync_messages(self) -> None:
+        """Periodically sync messages from all tracked channels."""
+        try:
+            channel_ids = self.message_store.get_channel_ids()
+            logger.info(f"Starting periodic sync for {len(channel_ids)} channels")
+
+            for channel_id in channel_ids:
+                channel = self.get_channel(int(channel_id))
+                if isinstance(channel, discord.TextChannel):
+                    try:
+                        await self.message_store.sync_channel(channel)
+                        logger.info(f"Synced messages for channel #{channel.name}")
+                    except Exception as e:
+                        logger.error(f"Error syncing channel #{channel.name}: {str(e)}")
+                        continue
+        except Exception as e:
+            logger.error(f"Error in periodic message sync: {str(e)}")
+
     @check_reminders.before_loop
-    async def before_check_reminders(self) -> None:
-        """Wait until the bot is ready before starting the reminder check task."""
+    @sync_messages.before_loop
+    async def before_background_tasks(self) -> None:
+        """Wait until the bot is ready before starting background tasks."""
         await self.wait_until_ready()
-        logger.info("Reminder check task is ready to start")
+        logger.info("Background tasks are ready to start")
 
     async def on_ready(self) -> None:
         """Event triggered when the bot is ready."""
@@ -118,6 +150,21 @@ class DeepBot(commands.Bot):
 
         await self.change_presence(activity=discord.Game(name="with myself"))
 
+        # Initial sync of all tracked channels
+        channel_ids = self.message_store.get_channel_ids()
+        logger.info(f"Starting initial sync for {len(channel_ids)} channels")
+        for channel_id in channel_ids:
+            channel = self.get_channel(int(channel_id))
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    await self.message_store.sync_channel(channel)
+                    logger.info(f"Initial sync completed for channel #{channel.name}")
+                except Exception as e:
+                    logger.error(
+                        f"Error in initial sync for channel #{channel.name}: {str(e)}"
+                    )
+                    continue
+
         for guild in self.guilds:
             logger.info(f"Connected to {guild.name}")
 
@@ -125,10 +172,13 @@ class DeepBot(commands.Bot):
 
     async def close(self) -> None:
         """Close the bot and clean up resources."""
-        # Cancel the reminder check task if it's running
+        # Cancel background tasks
         if self.check_reminders.is_running():
             self.check_reminders.cancel()
             logger.info("Cancelled reminder check task")
+        if self.sync_messages.is_running():
+            self.sync_messages.cancel()
+            logger.info("Cancelled message sync task")
 
         # Call the parent close method
         await super().close()
@@ -136,6 +186,10 @@ class DeepBot(commands.Bot):
     async def on_message(self, message: discord.Message) -> None:
         """Event triggered when a message is received."""
         channel_id = message.channel.id
+
+        # Add message to store if it's in a tracked channel
+        if str(channel_id) in self.message_store.get_channel_ids():
+            await self.message_store.add_message(message)
 
         # Get or initialize message history for this channel
         if await self.message_history.initialize_channel(message.channel):

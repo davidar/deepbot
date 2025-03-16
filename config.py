@@ -44,8 +44,15 @@ if not DISCORD_TOKEN:
     raise ValueError("DISCORD_TOKEN environment variable is not set")
 
 # API configuration
-API_URL = "http://localhost:11434"
-MODEL_NAME = "mistral-small"
+API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+MODEL_NAME = os.getenv("OLLAMA_MODEL_NAME", "mistral-small")
+
+# Embedding model configuration
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "nomic-embed-text")
+
+# Storage configuration
+MESSAGE_STORE_DIR = os.getenv("MESSAGE_STORE_DIR", "message_store")
+SEARCH_INDEX_PATH = os.getenv("SEARCH_INDEX_PATH", "./chroma_db")
 
 
 # Load model options from JSON

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from typing import Set
 
 from discord import (
     Message,
@@ -37,7 +36,6 @@ class MessageSyncManager:
         self.sync_interval = sync_interval
         self._sync_lock = asyncio.Lock()
         self._is_syncing = False
-        self._active_channels: Set[int] = set()  # Track active channel IDs
 
         # Register event handlers
         self._register_handlers()
@@ -53,15 +51,16 @@ class MessageSyncManager:
         self.bot.add_listener(self.on_raw_reaction_add, "on_raw_reaction_add")
         self.bot.add_listener(self.on_raw_reaction_remove, "on_raw_reaction_remove")
 
-    def mark_channel_active(self, channel_id: int) -> None:
-        """Mark a channel as active for syncing.
+    def _is_channel_active(self, channel_id: str) -> bool:
+        """Check if a channel is being tracked in the message store.
 
         Args:
             channel_id: The Discord channel ID
+
+        Returns:
+            True if the channel exists in the message store
         """
-        if channel_id not in self._active_channels:
-            self._active_channels.add(channel_id)
-            logger.debug(f"Marked channel {channel_id} as active for syncing")
+        return channel_id in self.message_store.get_channel_ids()
 
     async def on_message(self, message: Message) -> None:
         """Handle new messages.
@@ -70,9 +69,9 @@ class MessageSyncManager:
             message: The new Discord message
         """
         try:
-            # Only track channels where the bot sends messages
-            if message.author == self.bot.user:
-                self.mark_channel_active(message.channel.id)
+            channel_id = str(message.channel.id)
+            if not self._is_channel_active(channel_id):
+                return
 
             await self.message_store.add_message(message)
             logger.debug(f"Added new message {message.id} to store")
@@ -86,12 +85,12 @@ class MessageSyncManager:
             payload: The raw message update event data
         """
         try:
-            channel_id = int(payload.data["channel_id"])
-            if channel_id not in self._active_channels:
+            channel_id = str(payload.data["channel_id"])
+            if not self._is_channel_active(channel_id):
                 return
 
             # Get the updated message object
-            channel = self.bot.get_channel(channel_id)
+            channel = self.bot.get_channel(int(channel_id))
             if not isinstance(channel, TextChannel):
                 return
 
@@ -109,7 +108,7 @@ class MessageSyncManager:
         Args:
             payload: The raw message delete event data
         """
-        if payload.channel_id not in self._active_channels:
+        if not self._is_channel_active(str(payload.channel_id)):
             return
 
         # Note: Currently MessageStore doesn't support message deletion
@@ -125,7 +124,8 @@ class MessageSyncManager:
             payload: The raw reaction action event data
         """
         try:
-            if payload.channel_id not in self._active_channels:
+            channel_id = str(payload.channel_id)
+            if not self._is_channel_active(channel_id):
                 return
 
             # Get the message that was reacted to
@@ -148,7 +148,8 @@ class MessageSyncManager:
             payload: The raw reaction action event data
         """
         try:
-            if payload.channel_id not in self._active_channels:
+            channel_id = str(payload.channel_id)
+            if not self._is_channel_active(channel_id):
                 return
 
             # Get the message that had a reaction removed
@@ -174,12 +175,13 @@ class MessageSyncManager:
         async with self._sync_lock:
             try:
                 self._is_syncing = True
+                active_channels = self.message_store.get_channel_ids()
                 logger.info(
-                    f"Starting background sync of {len(self._active_channels)} active channels"
+                    f"Starting background sync of {len(active_channels)} active channels"
                 )
 
-                for channel_id in self._active_channels:
-                    channel = self.bot.get_channel(channel_id)
+                for channel_id in active_channels:
+                    channel = self.bot.get_channel(int(channel_id))
                     if not isinstance(channel, TextChannel):
                         continue
 

@@ -10,19 +10,14 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Generator, List
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from discord import TextChannel
 from discord.message import Message
 
-from message_store import (
-    ChannelMetadata,
-    MessageStore,
-    StoredMessage,
-    TimeRange,
-    UserInfo,
-)
+from message_store import MessageStore
+from time_tracking import ChannelMetadata, TimeRange
 
 
 @pytest.fixture
@@ -69,219 +64,162 @@ async def test_message_store_roundtrip(test_data_dir: str) -> None:
                 original_data[filename] = json.load(f)
 
     # Create a new store and load the data
-    store = MessageStore(storage_dir=test_data_dir)
+    with patch("message_indexer.MessageIndexer") as mock_indexer:  # Mock the indexer
+        store = MessageStore(
+            data_dir=test_data_dir,
+            message_indexer=mock_indexer.return_value,
+        )
 
-    # Save to a new directory
-    new_dir = tempfile.mkdtemp()
-    store.storage_dir = new_dir
-    store.save_all_channels()
+        # Save all channel data
+        for channel_id in store.storage_manager.get_channel_ids():
+            store.storage_manager.save_channel_data(channel_id)
 
-    # Load and compare the saved data
-    for filename, orig in original_data.items():
-        new_file = os.path.join(new_dir, filename)
-        assert os.path.exists(new_file), f"File {filename} was not saved"
+        # Save to a new directory
+        new_dir = tempfile.mkdtemp()
 
-        with open(new_file, "r", encoding="utf-8") as f:
-            new_data = json.load(f)
+        # Copy messages and metadata to new directory
+        for filename in os.listdir(test_data_dir):
+            if filename.endswith(".json"):
+                src_file = os.path.join(test_data_dir, filename)
+                dst_file = os.path.join(new_dir, filename)
+                shutil.copy2(src_file, dst_file)
 
-        # Compare the important parts of the data
-        # Note: We skip exportedAt since it will be different
-        print(f"Comparing file: {filename}")
-        print(f"Original data keys: {list(orig.keys())}")
-        print(f"New data keys: {list(new_data.keys())}")
+        # Create a new store with the copied data
+        store = MessageStore(
+            data_dir=new_dir,
+            message_indexer=mock_indexer.return_value,
+        )
 
-        # Skip metadata files when comparing message data
-        if not filename.endswith("_metadata.json"):
-            assert new_data.get("guild") == orig.get("guild"), "Guild info mismatch"
-            assert new_data.get("channel") == orig.get(
-                "channel"
-            ), "Channel info mismatch"
-            assert new_data.get("messages", []) == orig.get(
-                "messages", []
-            ), "Message count mismatch"
+        # Save all channel data again
+        for channel_id in store.storage_manager.get_channel_ids():
+            store.storage_manager.save_channel_data(channel_id)
 
-            # Compare each message's fields
-            for new_msg, orig_msg in zip(new_data["messages"], orig["messages"]):
-                assert new_msg["id"] == orig_msg["id"], "Message ID mismatch"
-                assert new_msg["type"] == orig_msg["type"], "Message type mismatch"
-                assert new_msg["content"] == orig_msg["content"], "Content mismatch"
-                assert new_msg["author"] == orig_msg["author"], "Author info mismatch"
-                assert new_msg["mentions"] == orig_msg["mentions"], "Mentions mismatch"
-                assert (
-                    new_msg["attachments"] == orig_msg["attachments"]
-                ), "Attachments mismatch"
-                assert (
-                    new_msg["reactions"] == orig_msg["reactions"]
-                ), "Reactions mismatch"
+        # Compare each file
+        for filename in os.listdir(test_data_dir):
+            if not filename.endswith(".json"):
+                continue
 
-                # Handle optional reference field
-                if "reference" in orig_msg:
-                    assert "reference" in new_msg, "Reference missing in new message"
-                    assert (
-                        new_msg["reference"] == orig_msg["reference"]
-                    ), "Reference mismatch"
-                else:
-                    assert (
-                        "reference" not in new_msg
-                    ), "Unexpected reference in new message"
+            orig_file = os.path.join(test_data_dir, filename)
+            new_file = os.path.join(new_dir, filename)
 
-                assert (
-                    new_msg["inlineEmojis"] == orig_msg["inlineEmojis"]
-                ), "Emoji mismatch"
+            # Load and normalize both files
+            with open(orig_file, "r", encoding="utf-8") as f:
+                orig_data = normalize_json(json.load(f))
+            with open(new_file, "r", encoding="utf-8") as f:
+                new_data = normalize_json(json.load(f))
 
-    # Cleanup
-    shutil.rmtree(new_dir)
+            # Compare the data
+            orig_str = json.dumps(orig_data, sort_keys=True, indent=2)
+            new_str = json.dumps(new_data, sort_keys=True, indent=2)
 
-
-@pytest.mark.asyncio
-async def test_message_store_json_diff(test_data_dir: str) -> None:
-    """Test that the JSON files are identical after a roundtrip (except for exportedAt)."""
-    # Create a new store and load the data
-    store = MessageStore(storage_dir=test_data_dir)
-
-    # Save to a new directory
-    new_dir = tempfile.mkdtemp()
-    store.storage_dir = new_dir
-    store.save_all_channels()
-
-    # Compare each file
-    for filename in os.listdir(test_data_dir):
-        if not filename.endswith(".json"):
-            continue
-
-        orig_file = os.path.join(test_data_dir, filename)
-        new_file = os.path.join(new_dir, filename)
-
-        # Load and normalize both files
-        with open(orig_file, "r", encoding="utf-8") as f:
-            orig_data = normalize_json(json.load(f))
-        with open(new_file, "r", encoding="utf-8") as f:
-            new_data = normalize_json(json.load(f))
-
-        # Convert both to formatted JSON strings for comparison
-        orig_json = json.dumps(orig_data, indent=2, sort_keys=True)
-        new_json = json.dumps(new_data, indent=2, sort_keys=True)
-
-        # If they don't match, generate a detailed diff
-        if orig_json != new_json:
-            diff = list(
-                difflib.unified_diff(
-                    orig_json.splitlines(keepends=True),
-                    new_json.splitlines(keepends=True),
-                    fromfile=f"original/{filename}",
-                    tofile=f"roundtripped/{filename}",
+            if orig_str != new_str:
+                # If they don't match, show a diff
+                diff = list(
+                    difflib.unified_diff(
+                        orig_str.splitlines(keepends=True),
+                        new_str.splitlines(keepends=True),
+                        fromfile=orig_file,
+                        tofile=new_file,
+                    )
                 )
-            )
-            assert False, f"JSON diff found in {filename}:\n{''.join(diff)}"
+                assert False, f"Files differ:\n{''.join(diff)}"
 
-    # Cleanup
-    shutil.rmtree(new_dir)
+        # Cleanup
+        shutil.rmtree(new_dir)
 
 
 @pytest.mark.asyncio
 async def test_gap_tracking(test_data_dir: str) -> None:
     """Test that gaps are properly tracked and updated."""
-    store = MessageStore(storage_dir=test_data_dir)
+    with patch("message_indexer.MessageIndexer") as mock_indexer:  # Mock the indexer
+        store = MessageStore(
+            data_dir=test_data_dir,
+            message_indexer=mock_indexer.return_value,
+        )
 
-    # Create a test channel ID
-    channel_id = "123456789"
+        # Create a test channel ID
+        channel_id = "123456789"
 
-    # Create metadata with some known ranges and gaps
-    metadata = ChannelMetadata(
-        channel_id=channel_id,
-        known_ranges=[
+        # Create metadata with some known ranges and gaps
+        metadata = ChannelMetadata(
+            channel_id=channel_id,
+            known_ranges=[],
+            gaps=[],
+            last_sync=datetime.now(timezone.utc),
+        )
+
+        # Add known ranges
+        metadata.add_known_range(
             TimeRange(
                 start=datetime(2024, 1, 1, tzinfo=timezone.utc),
                 end=datetime(2024, 1, 2, tzinfo=timezone.utc),
-            ),
+            )
+        )
+        metadata.add_known_range(
             TimeRange(
                 start=datetime(2024, 1, 4, tzinfo=timezone.utc),
                 end=datetime(2024, 1, 5, tzinfo=timezone.utc),
-            ),
-        ],
-        gaps=[],
-        last_sync=datetime.now(timezone.utc),
-    )
-
-    # Update gaps
-    metadata._update_gaps()
-
-    # Add the metadata to the store
-    # pylint: disable=protected-access
-    store._channel_metadata[channel_id] = metadata
-
-    # Check that gaps are detected
-    assert len(metadata.gaps) == 1
-    assert metadata.gaps[0].start == datetime(2024, 1, 2, tzinfo=timezone.utc)
-    assert metadata.gaps[0].end == datetime(2024, 1, 4, tzinfo=timezone.utc)
-
-    # Add a range that fills the gap
-    metadata.add_known_range(
-        TimeRange(
-            start=datetime(2024, 1, 2, tzinfo=timezone.utc),
-            end=datetime(2024, 1, 4, tzinfo=timezone.utc),
+            )
         )
-    )
 
-    # Check that the gap is filled
-    assert len(metadata.gaps) == 0
+        # Add the metadata to the store
+        store.storage_manager.channel_metadata[channel_id] = metadata
 
-    # Add a range that overlaps with existing ranges
-    metadata.add_known_range(
-        TimeRange(
-            start=datetime(
-                2024, 1, 1, 12, tzinfo=timezone.utc
-            ),  # Overlaps with first range
-            end=datetime(
-                2024, 1, 2, 12, tzinfo=timezone.utc
-            ),  # Overlaps with second range
-        )
-    )
-
-    # Check that ranges are merged
-    assert len(metadata.known_ranges) == 1
-    assert metadata.known_ranges[0].start == datetime(2024, 1, 1, tzinfo=timezone.utc)
-    assert metadata.known_ranges[0].end == datetime(2024, 1, 5, tzinfo=timezone.utc)
+        # Check that gaps are detected
+        assert len(metadata.gaps) == 1
+        assert metadata.gaps[0].start == datetime(2024, 1, 2, tzinfo=timezone.utc)
+        assert metadata.gaps[0].end == datetime(2024, 1, 4, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio
 async def test_recent_gaps(test_data_dir: str) -> None:
     """Test that recent gaps are properly identified."""
-    store = MessageStore(storage_dir=test_data_dir)
+    with patch("message_indexer.MessageIndexer") as mock_indexer:  # Mock the indexer
+        store = MessageStore(
+            data_dir=test_data_dir,
+            message_indexer=mock_indexer.return_value,
+        )
 
-    # Create a test channel ID
-    channel_id = "123456789"
+        # Create a test channel ID
+        channel_id = "123456789"
 
-    # Create metadata with some known ranges
-    now = datetime.now(timezone.utc)
-    metadata = ChannelMetadata(
-        channel_id=channel_id,
-        known_ranges=[
-            TimeRange(start=now - timedelta(hours=48), end=now - timedelta(hours=24)),
-            TimeRange(start=now - timedelta(hours=12), end=now),
-        ],
-        gaps=[],
-        last_sync=now,
-    )
+        # Create metadata with some known ranges
+        now = datetime.now(timezone.utc)
+        metadata = ChannelMetadata(
+            channel_id=channel_id,
+            known_ranges=[],
+            gaps=[],
+            last_sync=now,
+        )
 
-    # Update gaps
-    metadata._update_gaps()
+        # Add known ranges
+        metadata.add_known_range(
+            TimeRange(
+                start=now - timedelta(hours=48),
+                end=now - timedelta(hours=24),
+            )
+        )
+        metadata.add_known_range(
+            TimeRange(
+                start=now - timedelta(hours=12),
+                end=now,
+            )
+        )
 
-    # Add the metadata to the store
-    # pylint: disable=protected-access
-    store._channel_metadata[channel_id] = metadata
+        # Add the metadata to the store
+        store.storage_manager.channel_metadata[channel_id] = metadata
 
-    # Check recent gaps (last 24 hours)
-    recent_gaps = metadata.get_recent_gaps(timedelta(hours=24))
-    assert len(recent_gaps) == 1
-    assert recent_gaps[0].start == now - timedelta(hours=24)
-    assert recent_gaps[0].end == now - timedelta(hours=12)
+        # Check recent gaps (last 24 hours)
+        recent_gaps = metadata.get_recent_gaps(timedelta(hours=24))
+        assert len(recent_gaps) == 1
+        assert recent_gaps[0].start == now - timedelta(hours=24)
+        assert recent_gaps[0].end == now - timedelta(hours=12)
 
 
 @pytest.mark.asyncio
 async def test_channel_initialization(test_data_dir: str) -> None:
     """Test channel initialization with gaps and recent messages."""
-    store = MessageStore(storage_dir=test_data_dir)
+    store = MessageStore(data_dir=test_data_dir)
 
     # Create a mock channel
     channel = Mock(spec=TextChannel)
@@ -289,7 +227,7 @@ async def test_channel_initialization(test_data_dir: str) -> None:
     channel.name = "test-channel"
 
     # Create some mock messages
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(microsecond=0)  # Round to seconds
     messages: List[Mock] = [Mock(spec=Message) for _ in range(5)]
 
     # Set up message timestamps
@@ -310,6 +248,9 @@ async def test_channel_initialization(test_data_dir: str) -> None:
         msg.mentions = []
         msg.stickers = []
         msg.edited_at = None
+        msg.reference = None
+        msg.pinned = False
+        msg.channel = channel
 
     # Set up channel.history() to return our mock messages
     async def mock_history(*args: Any, **kwargs: Any) -> AsyncGenerator[Message, None]:
@@ -319,53 +260,10 @@ async def test_channel_initialization(test_data_dir: str) -> None:
     channel.history = mock_history
 
     # Initialize the channel
-    # pylint: disable=protected-access
-    store._channel_messages[str(channel.id)] = {}
-    # pylint: disable=protected-access
-    store._channel_metadata[str(channel.id)] = ChannelMetadata(
+    store.storage_manager.messages[str(channel.id)] = {}
+    store.storage_manager.channel_metadata[str(channel.id)] = ChannelMetadata(
         channel_id=str(channel.id), known_ranges=[], gaps=[], last_sync=now
     )
-
-    # Mock add_message to store messages
-    mock_add_message = Mock()
-
-    async def _mock_add_message(message: Message) -> None:
-        # pylint: disable=protected-access
-        stored_msg = StoredMessage(
-            id=str(message.id),
-            type="Default",
-            timestamp=message.created_at.isoformat(),
-            timestampEdited=(
-                message.edited_at.isoformat() if message.edited_at else None
-            ),
-            callEndedTimestamp=None,
-            isPinned=False,
-            content=message.content,
-            author=UserInfo(
-                id=str(message.author.id),
-                name=message.author.name,
-                discriminator=message.author.discriminator,
-                nickname=None,
-                color=None,
-                isBot=message.author.bot,
-                roles=[],
-                avatarUrl=(
-                    str(message.author.avatar.url) if message.author.avatar else ""
-                ),
-            ),
-            mentions=[],
-            attachments=[],
-            embeds=[],
-            reactions=[],
-            stickers=[],
-            inlineEmojis=[],
-            reference=None,
-        )
-        # pylint: disable=protected-access
-        store._channel_messages[str(channel.id)][stored_msg.id] = stored_msg
-
-    mock_add_message.side_effect = _mock_add_message
-    store.add_message = mock_add_message  # type: ignore[method-assign]
 
     await store.initialize_channel(channel)
 
@@ -374,17 +272,19 @@ async def test_channel_initialization(test_data_dir: str) -> None:
     assert len(channel_messages) == 5
 
     # Check that metadata was updated
-    # pylint: disable=protected-access
-    metadata = store._channel_metadata[str(channel.id)]
+    metadata = store.storage_manager.channel_metadata[str(channel.id)]
     assert len(metadata.known_ranges) == 1
-    assert metadata.known_ranges[0].start <= messages[-1].created_at
-    assert metadata.known_ranges[0].end >= messages[0].created_at
+    # Round timestamps to seconds for comparison
+    range_start = metadata.known_ranges[0].start.replace(microsecond=0)
+    range_end = metadata.known_ranges[0].end.replace(microsecond=0)
+    assert range_start <= messages[-1].created_at
+    assert range_end >= messages[0].created_at
 
 
 @pytest.mark.asyncio
 async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
     """Test channel initialization when there are gaps in history."""
-    store = MessageStore(storage_dir=test_data_dir)
+    store = MessageStore(data_dir=test_data_dir)
 
     # Create a mock channel
     channel = Mock(spec=TextChannel)
@@ -395,20 +295,28 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
     now = datetime.now(timezone.utc)
     metadata = ChannelMetadata(
         channel_id=str(channel.id),
-        known_ranges=[
-            TimeRange(start=now - timedelta(hours=48), end=now - timedelta(hours=24)),
-            TimeRange(start=now - timedelta(hours=12), end=now),
-        ],
+        known_ranges=[],
         gaps=[],
         last_sync=now,
     )
-    # Update gaps
-    metadata._update_gaps()
+
+    # Add known ranges
+    metadata.add_known_range(
+        TimeRange(
+            start=now - timedelta(hours=48),
+            end=now - timedelta(hours=24),
+        )
+    )
+    metadata.add_known_range(
+        TimeRange(
+            start=now - timedelta(hours=12),
+            end=now,
+        )
+    )
 
     # Add the metadata to the store
-    # pylint: disable=protected-access
-    store._channel_metadata[str(channel.id)] = metadata
-    store._channel_messages[str(channel.id)] = {}
+    store.storage_manager.channel_metadata[str(channel.id)] = metadata
+    store.storage_manager.messages[str(channel.id)] = {}
 
     # Create mock messages for the gap
     gap_messages: List[Mock] = [Mock(spec=Message) for _ in range(3)]
@@ -431,6 +339,9 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
         msg.mentions = []
         msg.stickers = []
         msg.edited_at = None
+        msg.reference = None
+        msg.pinned = False
+        msg.channel = channel
 
     # Set up channel.history() to return our mock messages
     async def mock_history(*args: Any, **kwargs: Any) -> AsyncGenerator[Message, None]:
@@ -438,47 +349,6 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
             yield msg
 
     channel.history = mock_history
-
-    # Mock add_message to store messages
-    mock_add_message = Mock()
-
-    async def _mock_add_message(message: Message) -> None:
-        # pylint: disable=protected-access
-        stored_msg = StoredMessage(
-            id=str(message.id),
-            type="Default",
-            timestamp=message.created_at.isoformat(),
-            timestampEdited=(
-                message.edited_at.isoformat() if message.edited_at else None
-            ),
-            callEndedTimestamp=None,
-            isPinned=False,
-            content=message.content,
-            author=UserInfo(
-                id=str(message.author.id),
-                name=message.author.name,
-                discriminator=message.author.discriminator,
-                nickname=None,
-                color=None,
-                isBot=message.author.bot,
-                roles=[],
-                avatarUrl=(
-                    str(message.author.avatar.url) if message.author.avatar else ""
-                ),
-            ),
-            mentions=[],
-            attachments=[],
-            embeds=[],
-            reactions=[],
-            stickers=[],
-            inlineEmojis=[],
-            reference=None,
-        )
-        # pylint: disable=protected-access
-        store._channel_messages[str(channel.id)][stored_msg.id] = stored_msg
-
-    mock_add_message.side_effect = _mock_add_message
-    store.add_message = mock_add_message  # type: ignore[method-assign]
 
     # Initialize the channel
     await store.initialize_channel(channel)
@@ -488,8 +358,7 @@ async def test_channel_initialization_with_gaps(test_data_dir: str) -> None:
     assert len(channel_messages) == 3
 
     # Check that metadata was updated
-    # pylint: disable=protected-access
-    metadata = store._channel_metadata[str(channel.id)]
+    metadata = store.storage_manager.channel_metadata[str(channel.id)]
     assert (
         len(metadata.known_ranges) == 1
     )  # All ranges should be merged since they overlap

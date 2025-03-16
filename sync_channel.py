@@ -26,12 +26,12 @@ if not config.DISCORD_TOKEN:
 class ChannelSyncBot(commands.Bot):
     """Simple bot to sync a specific channel."""
 
-    def __init__(self, channel_id: int, store_dir: str) -> None:
+    def __init__(self, channel_id: int, store_dir: Optional[str] = None) -> None:
         """Initialize the bot.
 
         Args:
             channel_id: The Discord channel ID to sync
-            store_dir: Directory for the message store
+            store_dir: Directory for the message store (defaults to config.MESSAGE_STORE_DIR)
         """
         # Set up intents like the main bot
         intents = discord.Intents.default()
@@ -42,7 +42,7 @@ class ChannelSyncBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
         self.target_channel_id = channel_id
-        self.message_store = MessageStore(store_dir)
+        self.message_store = MessageStore(store_dir or config.MESSAGE_STORE_DIR)
         self.channel: Optional[TextChannel] = None
         self.sync_complete = asyncio.Event()
 
@@ -77,12 +77,12 @@ class ChannelSyncBot(commands.Bot):
             await self.close()
 
 
-async def main(channel_id: int, store_dir: str) -> None:
+async def main(channel_id: int, store_dir: Optional[str] = None) -> None:
     """Main entry point.
 
     Args:
         channel_id: The Discord channel ID to sync
-        store_dir: Directory for the message store
+        store_dir: Directory for the message store (defaults to config.MESSAGE_STORE_DIR)
     """
     bot = ChannelSyncBot(channel_id, store_dir)
 
@@ -103,8 +103,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--store-dir",
         type=str,
-        default="message_store",
-        help="Directory for message store (default: message_store)",
+        default=None,
+        help=f"Directory for message store (default: {config.MESSAGE_STORE_DIR})",
     )
 
     args = parser.parse_args()

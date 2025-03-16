@@ -6,7 +6,7 @@ from typing import Optional
 import discord
 from discord.ext import commands
 
-from command_handlers import (
+from command import (
     ExampleCommands,
     HistoryCommands,
     OptionCommands,
