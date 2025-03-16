@@ -11,6 +11,7 @@ from commands import setup_commands
 from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
 from message_history import MessageHistoryManager
+from message_store import MessageStore
 from reactions import ReactionManager
 from reminder_manager import reminder_manager
 from tools import tool_registry
@@ -44,6 +45,9 @@ class DeepBot(commands.Bot):
         self.api_client = ollama.Client(host=config.API_URL)
         logger.info("Using Ollama API client")
 
+        # Initialize message store
+        self.message_store = MessageStore()
+
     async def setup_hook(self) -> None:
         """Set up the bot's components after login."""
         if not self.user:
@@ -76,6 +80,7 @@ class DeepBot(commands.Bot):
             self.llm_handler,
             self.reaction_manager,
             self.user_manager,
+            self.message_store,
         )
 
         # Update context builder with command names after commands are set up

@@ -13,11 +13,13 @@ from command_handlers import (
     PromptCommands,
     ReactionCommands,
     ResponseCommands,
+    SearchCommands,
     UserCommands,
 )
 from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
 from message_history import MessageHistoryManager
+from message_store import MessageStore
 from reactions import ReactionManager
 from user_management import UserManager
 
@@ -205,6 +207,34 @@ def _setup_error_handler(bot: commands.Bot) -> None:
             await ctx.send(f"-# Error executing command: {error}")
 
 
+def _setup_search_commands(bot: commands.Bot, search_commands: SearchCommands) -> None:
+    """Set up search-related commands.
+
+    Args:
+        bot: The Discord bot instance
+        search_commands: The search command handler instance
+    """
+
+    @bot.command(name="search")
+    async def search_command(
+        ctx: Context,
+        *,
+        query: str,
+        channel: Optional[discord.TextChannel] = None,
+        author: Optional[discord.Member] = None,
+        limit: int = 10,
+    ) -> None:
+        """Search for messages using semantic search.
+
+        Args:
+            query: The search query
+            channel: Optional channel to filter results (mention the channel)
+            author: Optional author to filter results (mention the user)
+            limit: Maximum number of results to return (default: 10)
+        """
+        await search_commands.handle_search(ctx, query, channel, author, limit)
+
+
 def setup_commands(
     bot: commands.Bot,
     message_history: MessageHistoryManager,
@@ -212,6 +242,7 @@ def setup_commands(
     llm_handler: LLMResponseHandler,
     reaction_manager: ReactionManager,
     user_manager: UserManager,
+    message_store: MessageStore,
 ) -> None:
     """Set up bot commands.
 
@@ -222,6 +253,7 @@ def setup_commands(
         llm_handler: The LLM response handler instance
         reaction_manager: The reaction manager instance
         user_manager: The user manager instance
+        message_store: The message store instance
     """
     # Initialize command handlers
     option_commands = OptionCommands()
@@ -231,6 +263,7 @@ def setup_commands(
     example_commands = ExampleCommands()
     reaction_commands = ReactionCommands(reaction_manager)
     response_commands = ResponseCommands(llm_handler)
+    search_commands = SearchCommands(message_store)
 
     # Set up commands by category
     _setup_option_commands(bot, option_commands)
@@ -240,4 +273,5 @@ def setup_commands(
     _setup_response_commands(bot, response_commands)
     _setup_reaction_commands(bot, reaction_commands)
     _setup_user_commands(bot, user_commands)
+    _setup_search_commands(bot, search_commands)
     _setup_error_handler(bot)

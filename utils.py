@@ -1,10 +1,12 @@
 """Utility functions used across the DeepBot modules."""
 
 import re
+from datetime import datetime, timezone
 from typing import Optional, Union
 
 from discord.abc import GuildChannel, Messageable, PrivateChannel
 from discord.channel import DMChannel, TextChannel
+from discord.ext import commands
 from discord.message import Message
 from discord.threads import Thread
 
@@ -73,3 +75,80 @@ def clean_message_content(message: Message) -> str:
             content = re.sub(role_pattern, f"@{role_name}", content)
 
     return content
+
+
+def format_relative_time(timestamp_str: str) -> str:
+    """Format a timestamp into a human-readable relative time.
+
+    Args:
+        timestamp_str: ISO format timestamp string
+
+    Returns:
+        Human-readable relative time string
+    """
+    try:
+        timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta = now - timestamp
+
+        if delta.days > 365:
+            years = delta.days // 365
+            return f"{years}y ago"
+        elif delta.days > 30:
+            months = delta.days // 30
+            return f"{months}mo ago"
+        elif delta.days > 0:
+            return f"{delta.days}d ago"
+        elif delta.seconds > 3600:
+            hours = delta.seconds // 3600
+            return f"{hours}h ago"
+        elif delta.seconds > 60:
+            minutes = delta.seconds // 60
+            return f"{minutes}m ago"
+        else:
+            return "just now"
+    except (ValueError, AttributeError):
+        return "unknown time"
+
+
+def resolve_channel_name(channel_id: str, bot: Optional[commands.Bot]) -> str:
+    """Get channel name from ID.
+
+    Args:
+        channel_id: The channel ID
+        bot: The Discord bot instance for resolving channel names
+
+    Returns:
+        Channel name or ID if not found
+    """
+    if not bot:
+        return channel_id
+
+    try:
+        channel = bot.get_channel(int(channel_id))
+        if isinstance(channel, (TextChannel, Thread)):
+            return channel.name
+    except (ValueError, AttributeError):
+        pass
+    return channel_id
+
+
+def resolve_mentions(content: str, bot: commands.Bot) -> str:
+    """Resolve user mentions to usernames.
+
+    Args:
+        content: Message content with mentions
+        bot: The Discord bot instance for resolving mentions
+
+    Returns:
+        Content with mentions replaced by usernames
+    """
+    # Match Discord mention pattern
+    mention_pattern = re.compile(r"<@!?(\d+)>")
+
+    def replace_mention(match: re.Match[str]) -> str:
+        user_id = int(match.group(1))
+        user = bot.get_user(user_id)
+        return f"@{user.name if user else 'unknown'}"
+
+    return mention_pattern.sub(replace_mention, content)

@@ -3,7 +3,7 @@
 import io
 import json
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import discord
 from discord.ext import commands
@@ -13,9 +13,12 @@ import example_conversation
 import system_prompt
 from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
+from local_discord_index import LocalDiscordIndex
 from message_history import MessageHistoryManager
+from message_store import MessageStore
 from reactions import ReactionManager
 from user_management import UserManager
+from utils import format_relative_time, resolve_channel_name, resolve_mentions
 
 Context = commands.Context[commands.Bot]
 
@@ -709,3 +712,304 @@ class ResponseCommands:
         channel_id = ctx.channel.id
         self.llm_handler.stop_responses(channel_id)
         await ctx.send("-# 🤫 Stopped all responses in this channel")
+
+
+class SearchCommands:
+    """Handlers for search-related commands."""
+
+    def __init__(
+        self,
+        message_store: MessageStore,
+        storage_path: str = "./chroma_db",
+        model_name: str = "nomic-embed-text",
+        base_url: str = "http://localhost:11434",
+    ) -> None:
+        """Initialize search commands.
+
+        Args:
+            message_store: The message store to search
+            storage_path: Path to the vector database
+            model_name: Ollama model to use for embeddings
+            base_url: URL of the Ollama server
+        """
+        self.index = LocalDiscordIndex(
+            message_store,
+            storage_path=storage_path,
+            model_name=model_name,
+            base_url=base_url,
+        )
+        self.message_store = message_store
+
+    def _format_reactions(self, reactions: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Format reactions into a dictionary of emoji strings and counts.
+
+        Args:
+            reactions: List of reaction objects from Discord
+
+        Returns:
+            Dictionary mapping emoji strings to counts
+        """
+        formatted: Dict[str, int] = {}
+        for r in reactions:
+            emoji = r["emoji"]
+            # Handle custom emoji objects
+            if isinstance(emoji, dict):
+                emoji_str = f"<:{emoji['name']}:{emoji['id']}>"
+            else:
+                emoji_str = str(emoji)
+            formatted[emoji_str] = r["count"]
+        return formatted
+
+    def _format_extras(
+        self,
+        has_attachments: bool,
+        has_embeds: bool,
+        reactions: Optional[Dict[str, int]] = None,
+    ) -> str:
+        """Format extra information about a message.
+
+        Args:
+            has_attachments: Whether the message has attachments
+            has_embeds: Whether the message has embeds
+            reactions: Dictionary of reaction emojis and their counts
+
+        Returns:
+            Formatted string of extra information
+        """
+        extras: List[str] = []
+        if has_attachments:
+            extras.append("📎 has attachments")
+        if has_embeds:
+            extras.append("📌 has embeds")
+        if reactions:
+            reaction_str = " ".join(
+                f"{emoji}{count}" for emoji, count in reactions.items()
+            )
+            if reaction_str:
+                extras.append(reaction_str)
+        return f" [{', '.join(extras)}]" if extras else ""
+
+    def _resolve_stored_mentions(self, content: str, mentions: List[Any]) -> str:
+        """Resolve mentions using stored user information.
+
+        Args:
+            content: The message content
+            mentions: List of mentioned users with their info
+
+        Returns:
+            Content with mentions resolved to usernames
+        """
+        # Create a mapping of user IDs to names
+        id_to_name = {
+            mention.id: mention.nickname or mention.name for mention in mentions
+        }
+
+        # Replace <@ID> mentions with usernames
+        for user_id, name in id_to_name.items():
+            content = content.replace(f"<@{user_id}>", f"@{name}")
+            content = content.replace(f"<@!{user_id}>", f"@{name}")  # Nickname mentions
+
+        return content
+
+    def _format_message(
+        self,
+        message_id: str,
+        channel_id: str,
+        timestamp: str,
+        author: str,
+        content: str,
+        has_attachments: bool = False,
+        has_embeds: bool = False,
+        reactions: Optional[Dict[str, int]] = None,
+        bot: Optional[commands.Bot] = None,
+    ) -> str:
+        """Format a message for display.
+
+        Args:
+            message_id: The message ID
+            channel_id: The channel ID
+            timestamp: The message timestamp
+            author: The author's name
+            content: The message content
+            has_attachments: Whether the message has attachments
+            has_embeds: Whether the message has embeds
+            reactions: Dictionary of reaction emojis and their counts
+            bot: The Discord bot instance for resolving mentions/channels
+
+        Returns:
+            Formatted message string
+        """
+        # Format timestamp and channel name
+        relative_time = format_relative_time(timestamp)
+        channel_name = resolve_channel_name(channel_id, bot)
+
+        # Resolve mentions if bot is provided and collapse newlines
+        if bot:
+            content = resolve_mentions(content, bot)
+            # Escape mentions by adding a zero-width space after @
+            content = content.replace("@", "@\u200b")
+        content = " ".join(content.split())
+
+        # Format extra information
+        extra_info = self._format_extras(has_attachments, has_embeds, reactions)
+
+        # Build the message line
+        return f"-# [{relative_time}] #{channel_name} <{author}> {content}{extra_info}"
+
+    def _format_message_group(
+        self,
+        message: Any,
+        channel_id: str,
+        is_reply: bool = False,
+        bot: Optional[commands.Bot] = None,
+    ) -> str:
+        """Format a single message with its extra information.
+
+        Args:
+            message: The Discord message object
+            channel_id: The channel ID
+            is_reply: Whether this message is a reply (for formatting)
+            bot: The Discord bot instance for resolving mentions/channels
+
+        Returns:
+            Formatted message string
+        """
+        # Get reactions for the message
+        reactions = (
+            self._format_reactions(message.reactions) if message.reactions else None
+        )
+
+        # Format the content with mentions and newlines
+        content = self._resolve_stored_mentions(message.content, message.mentions)
+        content = content.replace("@", "@\u200b")  # Escape mentions
+        content = " ".join(content.split())
+
+        # Format timestamp
+        relative_time = format_relative_time(message.timestamp)
+
+        # Format the message line
+        prefix = "  ↳ " if is_reply else ""
+        extra_info = self._format_extras(
+            bool(message.attachments), bool(message.embeds), reactions
+        )
+        return f"-# {prefix}[{relative_time}] #{resolve_channel_name(channel_id, bot)} <{message.author.name}> {content}{extra_info}"
+
+    async def handle_search(
+        self,
+        ctx: Context,
+        query: str,
+        channel: Optional[discord.TextChannel] = None,
+        author: Optional[discord.Member] = None,
+        limit: int = 10,
+    ) -> None:
+        """Handle the search command.
+
+        Args:
+            ctx: The command context
+            query: The search query
+            channel: Optional channel to filter results
+            author: Optional author to filter results
+            limit: Maximum number of results to return
+        """
+        # Build filters
+        filters: Dict[str, Any] = {}
+        if channel:
+            filters["channel_id"] = str(channel.id)
+        if author:
+            filters["author"] = author.name
+
+        try:
+            # Perform search
+            async with ctx.typing():  # pyright: ignore
+                results = await self.index.search(query, top_k=limit, **filters)
+
+            if not results:
+                await ctx.send("-# No messages found matching your query.")
+                return
+
+            # Format results with context
+            message_groups: List[List[str]] = []
+            current_group: List[str] = []
+
+            for node in results:
+                metadata = node.metadata or {}
+                channel_id = metadata.get("channel_id", "unknown")
+                message_id = metadata.get("message_id", "unknown")
+
+                # Get the message from the store
+                message = self.message_store.get_message(channel_id, message_id)
+                if not message:
+                    continue
+
+                # Get context messages
+                channel_messages = self.message_store.get_channel_messages(channel_id)
+                message_index = next(
+                    (i for i, m in enumerate(channel_messages) if m.id == message_id),
+                    -1,
+                )
+
+                # Start a new group for this result
+                result_group: List[str] = []
+
+                # Add context message first if it exists
+                if message.reference:
+                    # If it's a reply, add the referenced message first
+                    ref_msg = self.message_store.get_message(
+                        message.reference.channelId,
+                        message.reference.messageId,
+                    )
+                    if ref_msg:
+                        result_group.append(
+                            self._format_message_group(
+                                ref_msg, channel_id, is_reply=False, bot=ctx.bot
+                            )
+                        )
+                elif message_index > 0:
+                    # Otherwise, add the previous message first
+                    prev_msg = channel_messages[message_index - 1]
+                    result_group.append(
+                        self._format_message_group(
+                            prev_msg, channel_id, is_reply=False, bot=ctx.bot
+                        )
+                    )
+
+                # Then add the main message
+                result_group.append(
+                    self._format_message_group(
+                        message,
+                        channel_id,
+                        is_reply=bool(message.reference),
+                        bot=ctx.bot,
+                    )
+                )
+
+                # Add blank line between results
+                result_group.append("")
+
+                # Add this group to the current chunk if it fits, otherwise start a new chunk
+                group_length = sum(
+                    len(line) + 1 for line in result_group
+                )  # +1 for newline
+                current_length = sum(len(line) + 1 for line in current_group)
+
+                if current_length + group_length > 1900:  # Leave room for formatting
+                    if current_group:
+                        message_groups.append(current_group)
+                    current_group = result_group
+                else:
+                    current_group.extend(result_group)
+
+            # Add the last group if it exists
+            if current_group:
+                message_groups.append(current_group)
+
+            # Send each group of messages
+            for group in message_groups:
+                # Remove trailing blank line if it exists
+                if group and not group[-1]:
+                    group.pop()
+                await ctx.send("\n".join(group))
+
+        except Exception as e:
+            logger.error(f"Error performing search: {e}")
+            await ctx.send(f"-# An error occurred while searching: {e}")
