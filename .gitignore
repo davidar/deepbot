@@ -8,6 +8,7 @@ user_restrictions.json
 example_conversation.json
 reminders.json
 chroma_db/
+messages.db
 
 # Python
 __pycache__/
