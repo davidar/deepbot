@@ -210,8 +210,10 @@ class StoredMessage:
             "type": embed.type,
             "description": embed.description,
             "url": embed.url,
-            "timestamp": format_timestamp(
-                pendulum.instance(embed.timestamp) if embed.timestamp else None
+            "timestamp": (
+                format_timestamp(pendulum.instance(embed.timestamp))
+                if embed.timestamp
+                else None
             ),
             "color": embed.colour.value if embed.colour else None,
             "footer": (
@@ -366,8 +368,10 @@ class StoredMessage:
         timestamp = format_timestamp(pendulum.instance(message.created_at))
         if timestamp is None:  # This should never happen as created_at is required
             raise ValueError("Message created_at timestamp is required")
-        edited_timestamp = format_timestamp(
-            pendulum.instance(message.edited_at) if message.edited_at else None
+        edited_timestamp = (
+            format_timestamp(pendulum.instance(message.edited_at))
+            if message.edited_at
+            else None
         )
 
         # Get message type

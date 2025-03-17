@@ -365,7 +365,7 @@ class ReminderTool(BaseTool):
             "time": {
                 "type": "string",
                 "description": (
-                    "When to send the reminder (e.g., '5m', '2h', '1d', "
+                    "When to send the reminder (e.g., 'in 10min', 'tomorrow at 10am', "
                     "or a specific time like '2023-12-31 23:59')"
                 ),
             },
@@ -375,7 +375,7 @@ class ReminderTool(BaseTool):
     examples: ClassVar[List[ToolExample]] = [
         ToolExample(
             user_query="Remind me to check the oven in 10 minutes",
-            tool_args={"content": "Check the oven", "time": "10m"},
+            tool_args={"content": "Check the oven", "time": "in 10min"},
             response="I'll remind you to 'Check the oven' in 10 minutes",
         ),
         ToolExample(

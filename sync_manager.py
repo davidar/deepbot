@@ -15,7 +15,7 @@ from message_indexer import MessageIndexer
 from storage_manager import StorageManager
 from time_tracking import TimeRange
 from utils.discord_utils import get_channel_name
-from utils.time_utils import ensure_datetime, parse_datetime, to_pendulum
+from utils.time_utils import ensure_datetime, parse_datetime
 
 # Set up logging
 logger = logging.getLogger("deepbot.sync_manager")
@@ -196,7 +196,9 @@ class SyncManager:
 
             if stored_msg:
                 # Message exists - update it if it's been edited or has reactions
-                edited_at = to_pendulum(message.edited_at)
+                edited_at = (
+                    ensure_datetime(message.edited_at) if message.edited_at else None
+                )
                 if edited_at and (
                     not stored_msg.timestampEdited
                     or edited_at.to_iso8601_string() != stored_msg.timestampEdited

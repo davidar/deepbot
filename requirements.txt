@@ -6,6 +6,8 @@ huggingface-hub>=0.16.4
 rich>=13.3.3
 ollama>=0.1.0
 pendulum>=3.0.0  # Better datetime handling with timezone support
+dateparser>=1.1.0
+types-dateparser>=1.1.0
 
 # Core packages for local vector search
 llama-index-core>=0.10.0  # Base package with core functionality
