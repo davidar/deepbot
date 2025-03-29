@@ -2,6 +2,7 @@
 
 from .example_commands import ExampleCommands
 from .history_commands import HistoryCommands
+from .lore_commands import LoreCommands
 from .option_commands import OptionCommands
 from .prompt_commands import PromptCommands
 from .reaction_commands import ReactionCommands
@@ -12,6 +13,7 @@ from .user_commands import UserCommands
 __all__ = [
     "ExampleCommands",
     "HistoryCommands",
+    "LoreCommands",
     "OptionCommands",
     "PromptCommands",
     "ReactionCommands",

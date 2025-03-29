@@ -17,6 +17,11 @@ llama-index-llms-ollama>=0.1.0  # Ollama LLM
 llama-index-vector-stores-chroma>=0.1.0  # ChromaDB vector store
 chromadb>=0.4.22  # Local vector database
 
+# Dependencies for lorekeeper
+sentence-transformers>=2.6.0  # For embeddings
+pymongo>=4.6.0  # MongoDB client
+qdrant-client>=1.8.0  # Qdrant vector database
+
 # Testing dependencies
 pytest>=7.0.0
 pytest-asyncio>=0.21.0

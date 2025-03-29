@@ -9,6 +9,7 @@ from discord.ext import commands
 from command import (
     ExampleCommands,
     HistoryCommands,
+    LoreCommands,
     OptionCommands,
     PromptCommands,
     ReactionCommands,
@@ -235,6 +236,30 @@ def _setup_search_commands(bot: commands.Bot, search_commands: SearchCommands) -
         await search_commands.handle_search(ctx, query, channel, author, limit)
 
 
+def _setup_lore_commands(bot: commands.Bot, lore_commands: LoreCommands) -> None:
+    """Set up lore-related commands.
+
+    Args:
+        bot: The Discord bot instance
+        lore_commands: The lore command handler instance
+    """
+
+    @bot.command(name="lore")
+    async def lore_command(
+        ctx: Context,
+        *,
+        query: str,
+        limit: int = 50,
+    ) -> None:
+        """Ask the Keeper of Lore about past conversations.
+
+        Args:
+            query: What you want to know about
+            limit: Maximum number of search results (1-100)
+        """
+        await lore_commands.handle_lore(ctx, query=query, limit=limit)
+
+
 def setup_commands(
     bot: commands.Bot,
     message_history: MessageHistoryManager,
@@ -248,30 +273,50 @@ def setup_commands(
 
     Args:
         bot: The Discord bot instance
-        message_history: The message history manager instance
-        context_builder: The context builder instance
-        llm_handler: The LLM response handler instance
-        reaction_manager: The reaction manager instance
-        user_manager: The user manager instance
-        message_store: The message store instance
+        message_history: The message history manager
+        context_builder: The context builder
+        llm_handler: The LLM response handler
+        reaction_manager: The reaction manager
+        user_manager: The user manager
+        message_store: The message store
     """
-    # Initialize command handlers
+    # Set up option commands
     option_commands = OptionCommands()
-    history_commands = HistoryCommands(message_history, context_builder)
-    user_commands = UserCommands(user_manager)
-    prompt_commands = PromptCommands()
-    example_commands = ExampleCommands()
-    reaction_commands = ReactionCommands(reaction_manager)
-    response_commands = ResponseCommands(llm_handler)
-    search_commands = SearchCommands(message_store)
-
-    # Set up commands by category
     _setup_option_commands(bot, option_commands)
+
+    # Set up history commands
+    history_commands = HistoryCommands(message_history, context_builder)
     _setup_history_commands(bot, history_commands)
+
+    # Set up prompt commands
+    prompt_commands = PromptCommands()
     _setup_prompt_commands(bot, prompt_commands)
+
+    # Set up example commands
+    example_commands = ExampleCommands()
     _setup_example_commands(bot, example_commands)
+
+    # Set up response commands
+    response_commands = ResponseCommands(llm_handler)
     _setup_response_commands(bot, response_commands)
+
+    # Set up reaction commands
+    reaction_commands = ReactionCommands(reaction_manager)
     _setup_reaction_commands(bot, reaction_commands)
+
+    # Set up user commands
+    user_commands = UserCommands(user_manager)
     _setup_user_commands(bot, user_commands)
+
+    # Set up search commands
+    search_commands = SearchCommands(message_store)
     _setup_search_commands(bot, search_commands)
+
+    # Set up lore commands
+    lore_commands = LoreCommands(llm_handler)
+    _setup_lore_commands(bot, lore_commands)
+
+    # Set up error handler
     _setup_error_handler(bot)
+
+    logger.info("Set up commands")

@@ -2,13 +2,14 @@
 .env
 
 # System files
-system_prompt.txt
-reaction_data.json
-user_restrictions.json
-example_conversation.json
-reminders.json
-chroma_db/
-messages.db
+/system_prompt.txt
+/reaction_data.json
+/user_restrictions.json
+/example_conversation.json
+/reminders.json
+/chroma_db/
+/messages.db
+/vector_index/embedding_model/
 
 # Python
 __pycache__/
