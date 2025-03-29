@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Set
 
 logger = logging.getLogger("deepbot.lorekeeper")
 
@@ -29,7 +29,7 @@ def extract_conversation_fragments(
     Returns:
         List of conversation fragments
     """
-    conversation_fragments = []
+    conversation_fragments: List[Dict[str, Any]] = []
 
     # Skip if no results
     if not results:
@@ -43,7 +43,7 @@ def extract_conversation_fragments(
             continue
 
         # Parse the context into individual messages with authors
-        messages = []
+        messages: List[Dict[str, Any]] = []
         context_lines = result["content"].strip().split("\n\n")
 
         # Get the result metadata
@@ -110,17 +110,17 @@ def merge_conversation_fragments(
         return []
 
     # Now group fragments into conversations by finding overlaps
-    conversations = []
+    conversations: List[Dict[str, Any]] = []
 
     # Simple clustering of fragments based on common messages
-    processed_indices = set()
+    processed_indices: Set[int] = set()
 
     for i, fragment in enumerate(fragments):
         if i in processed_indices:
             continue
 
         # Start a new conversation with this fragment
-        current_conversation = {
+        current_conversation: Dict[str, List[Any]] = {
             "messages": [],
             "matched_messages": [],  # Messages with metadata
         }

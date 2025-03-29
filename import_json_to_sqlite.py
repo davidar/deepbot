@@ -78,7 +78,7 @@ def load_json_file(file_path: str) -> Optional[Dict[str, Any]]:
     """
     try:
         with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            data: Dict[str, Any] = json.load(f)
 
             # Validate required top-level fields
             if not all(field in data for field in ["channel", "messages"]):

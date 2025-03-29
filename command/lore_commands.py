@@ -22,9 +22,9 @@ class LoreCommands:
     def __init__(
         self,
         llm_handler: LLMResponseHandler,
-        qdrant_host: str = None,
-        qdrant_port: int = None,
-        model: str = None,
+        qdrant_host: Optional[str] = None,
+        qdrant_port: Optional[int] = None,
+        model: Optional[str] = None,
     ) -> None:
         """Initialize lore commands.
 
@@ -80,7 +80,7 @@ class LoreCommands:
 
         try:
             # Show that we're working on it
-            async with ctx.typing():
+            async with ctx.typing():  # pyright: ignore
                 # Add initial reaction to show we're working
                 if ctx.bot.user:
                     await message.add_reaction("📇")

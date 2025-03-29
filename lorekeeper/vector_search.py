@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # Qdrant for vector storage
 from qdrant_client import QdrantClient
@@ -21,7 +21,9 @@ logger = logging.getLogger("deepbot.lorekeeper")
 class VectorSearch:
     """Standalone vector search functionality"""
 
-    def __init__(self, qdrant_host: str = None, qdrant_port: int = None):
+    def __init__(
+        self, qdrant_host: Optional[str] = None, qdrant_port: Optional[int] = None
+    ):
         """Initialize with direct access to embeddings and storage
 
         Args:
@@ -36,8 +38,8 @@ class VectorSearch:
 
         # Create embedding model
         logger.info(f"Initializing embedding model: {config.EMBEDDING_MODEL}")
-        self.embedding_model = SentenceTransformer(
-            config.EMBEDDING_MODEL,
+        self.embedding_model = SentenceTransformer(  # type: ignore
+            model_name_or_path=config.EMBEDDING_MODEL,
             cache_folder=os.path.join(config.PERSIST_DIR, "embedding_model"),
         )
 
@@ -72,7 +74,10 @@ class VectorSearch:
             logger.error(f"Error checking collection: {e}")
 
     def search(
-        self, query: str, limit: int = None, similarity_cutoff: float = None
+        self,
+        query: str,
+        limit: Optional[int] = None,
+        similarity_cutoff: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for messages using semantic search
@@ -86,36 +91,39 @@ class VectorSearch:
             List of messages matching the query ordered by relevance
         """
         # Use provided values or defaults from config
-        limit = limit or config.DEFAULT_SEARCH_LIMIT
-        similarity_cutoff = similarity_cutoff or config.DEFAULT_SIMILARITY_CUTOFF
+        search_limit = limit or config.DEFAULT_SEARCH_LIMIT
+        search_cutoff = similarity_cutoff or config.DEFAULT_SIMILARITY_CUTOFF
 
         logger.info(
-            f"Searching for '{query}' with limit={limit}, similarity_cutoff={similarity_cutoff}"
+            f"Searching for '{query}' with limit={search_limit}, similarity_cutoff={search_cutoff}"
         )
 
         try:
             # Generate query embedding
-            query_embedding = self.embedding_model.encode(
+            query_embedding = self.embedding_model.encode(  # pyright: ignore
                 config.BGE_QUERY_PREFIX + query, show_progress_bar=False
+            )
+            query_embedding_list: List[float] = (
+                query_embedding.tolist()  # pyright: ignore
             )
 
             # Perform the search in Qdrant
             search_results = self.qdrant_client.search(
                 collection_name=self.collection_name,
-                query_vector=query_embedding.tolist(),
-                limit=limit,
-                score_threshold=similarity_cutoff,
+                query_vector=query_embedding_list,
+                limit=search_limit,
+                score_threshold=search_cutoff,
             )
 
             if not search_results:
                 logger.warning(
-                    f"No results found for query '{query}' with similarity threshold {similarity_cutoff}"
+                    f"No results found for query '{query}' with similarity threshold {search_cutoff}"
                 )
                 # Try again with lower threshold for debugging
-                if similarity_cutoff > 0.2:
+                if search_cutoff > 0.2:
                     debug_results = self.qdrant_client.search(
                         collection_name=self.collection_name,
-                        query_vector=query_embedding.tolist(),
+                        query_vector=query_embedding_list,
                         limit=5,
                         score_threshold=0.2,
                     )
@@ -126,9 +134,9 @@ class VectorSearch:
                 return []
 
             # Convert search results to a standard format
-            formatted_results = []
+            formatted_results: List[Dict[str, Any]] = []
             for result in search_results:
-                payload = result.payload
+                payload = result.payload or {}
                 formatted_results.append(
                     {
                         "message_id": payload.get("message_id"),

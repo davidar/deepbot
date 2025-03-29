@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import ollama
 from discord import ClientUser, Message, abc
@@ -36,7 +36,7 @@ class LoreSummaryGenerator:
         query: str,
         channel: abc.Messageable,
         message: Message,
-        model: str = None,
+        model: Optional[str] = None,
     ) -> None:
         """Generate a summary of search results and send to Discord.
 
@@ -49,10 +49,10 @@ class LoreSummaryGenerator:
         """
         # Get configuration
         lore_config = config.get_lore_summary_config()
-        model = model or lore_config["model"]
+        model_name = model or lore_config["model"]
 
         logger.info(
-            f"Starting summary generation with {len(results)} results using model {model}"
+            f"Starting summary generation with {len(results)} results using model {model_name}"
         )
 
         if not results:
@@ -97,12 +97,12 @@ class LoreSummaryGenerator:
             chunk_counter = 0
             last_update_length = 0
 
-            logger.info(f"Sending request to Ollama with model {model}")
+            logger.info(f"Sending request to Ollama with model {model_name}")
 
             # Use streaming to show tokens as they're generated
             try:
-                stream_response = await self.api_client.chat(
-                    model=model,
+                stream_response = await self.api_client.chat(  # pyright: ignore
+                    model=model_name,
                     messages=messages,
                     stream=True,
                     options=get_ollama_options(),
@@ -135,12 +135,13 @@ class LoreSummaryGenerator:
                 # Try fallback to non-streaming
                 logger.info("Falling back to non-streaming response")
                 try:
-                    response = await self.api_client.chat(
-                        model=model,
+                    response = await self.api_client.chat(  # pyright: ignore
+                        model=model_name,
                         messages=messages,
                         stream=False,
                     )
-                    accumulated_content = response.message.content
+                    if response.message and response.message.content is not None:
+                        accumulated_content = response.message.content
                     logger.info("Successfully got non-streaming response")
                 except Exception as fallback_error:
                     logger.exception(f"Fallback also failed: {fallback_error}")
