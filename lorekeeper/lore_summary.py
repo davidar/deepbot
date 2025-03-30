@@ -1,19 +1,22 @@
 """Lore summary generator using Ollama."""
 
-import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 import ollama
 from discord import ClientUser, Message, abc
 
 from config import get_ollama_options
+from lorekeeper.db.mention_utils import resolve_mentions
 
 from . import config
 from .conversation_formatter import format_lore_context
 
 # Set up logging
 logger = logging.getLogger("deepbot.lorekeeper")
+# Disable pymongo debug logs
+logging.getLogger("pymongo").setLevel(logging.WARNING)
 
 
 class LoreSummaryGenerator:
@@ -92,9 +95,8 @@ class LoreSummaryGenerator:
             # Keep track of the accumulated content
             accumulated_content = ""
 
-            # Stream the response, updating Discord message every few chunks
-            update_frequency = 3  # Update message every 3 chunks
-            chunk_counter = 0
+            # Stream the response, updating Discord message periodically
+            last_update_time = time.time()
             last_update_length = 0
 
             logger.info(f"Sending request to Ollama with model {model_name}")
@@ -112,11 +114,11 @@ class LoreSummaryGenerator:
                     # Get new content
                     new_content = chunk["message"]["content"]
                     accumulated_content += new_content
-                    chunk_counter += 1
 
-                    # Update the Discord message periodically
+                    # Update the Discord message once per second if content has changed
+                    current_time = time.time()
                     if (
-                        chunk_counter % update_frequency == 0
+                        current_time - last_update_time >= 1.0
                         and len(accumulated_content) > last_update_length
                     ):
                         update_text = accumulated_content
@@ -126,9 +128,7 @@ class LoreSummaryGenerator:
 
                         await reply.edit(content=update_text)
                         last_update_length = len(accumulated_content)
-
-                        # Small delay to avoid rate limits
-                        await asyncio.sleep(0.5)
+                        last_update_time = current_time
 
             except Exception as stream_error:
                 logger.exception(f"Error during streaming: {stream_error}")
@@ -149,11 +149,14 @@ class LoreSummaryGenerator:
 
             # Final update with complete text
             if accumulated_content and len(accumulated_content) > last_update_length:
-                # Truncate if too long for Discord
-                if len(accumulated_content) > 1900:
-                    accumulated_content = accumulated_content[:1900] + "..."
+                # Process @mentions in the final response
+                processed_content = resolve_mentions(accumulated_content)
 
-                await reply.edit(content=accumulated_content)
+                # Truncate if too long for Discord
+                if len(processed_content) > 1900:
+                    processed_content = processed_content[:1900] + "..."
+
+                await reply.edit(content=processed_content)
 
             # Change reaction to indicate completion
             await message.remove_reaction("📜", self.bot_user)

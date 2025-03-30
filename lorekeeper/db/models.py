@@ -49,9 +49,23 @@ class Reference(BaseModel):
 class Emoji(BaseModel):
     id: str = Field(alias="_id")
     name: str
-    source: Optional[str] = None
+    code: Optional[str] = None
+    isAnimated: Optional[bool] = False
     guildIds: Optional[List[str]] = None
+    source: Optional[str] = None
     image: Optional[Dict[str, Any]] = None
+    usage_count: Optional[int] = 0
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class Role(BaseModel):
+    id: str = Field(alias="_id")
+    name: str
+    color: Optional[str] = None
+    position: Optional[int] = 0
+    guildId: Optional[str] = None
+    exportedAt: Optional[str] = None
 
     model_config = ConfigDict(populate_by_name=True)
 

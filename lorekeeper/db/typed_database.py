@@ -18,7 +18,7 @@ from pymongo.cursor import Cursor
 from pymongo.database import Database
 from pymongo.mongo_client import MongoClient
 
-from .models import Asset, Author, Channel, Guild, Message, Sticker
+from .models import Asset, Author, Channel, Emoji, Guild, Message, Role, Sticker
 
 # MongoDB connection settings - inlined from Database.py
 URI = "mongodb://127.0.0.1:27017"
@@ -350,6 +350,16 @@ class TypedDatabase:
     def get_stickers_collection(guild_id: str) -> TypedCollection[Sticker]:
         """Get a typed collection of stickers for a guild"""
         return TypedDatabase.get_typed_guild_collection(guild_id, "stickers", Sticker)
+
+    @staticmethod
+    def get_roles_collection(guild_id: str) -> TypedCollection[Role]:
+        """Get a typed collection of roles for a guild"""
+        return TypedDatabase.get_typed_guild_collection(guild_id, "roles", Role)
+
+    @staticmethod
+    def get_emojis_collection(guild_id: str) -> TypedCollection[Emoji]:
+        """Get a typed collection of emojis for a guild"""
+        return TypedDatabase.get_typed_guild_collection(guild_id, "emojis", Emoji)
 
     @staticmethod
     def get_guilds_collection() -> TypedCollection[Guild]:
