@@ -263,70 +263,24 @@ def format_lore_context(results: List[Dict[str, Any]]) -> str:
     # Format conversations into context string
     context_text = ""
 
-    if conversations:
-        for conv_idx, conversation in enumerate(conversations, 1):
-            # Add a conversation header
-            context_text += f"CONVERSATION {conv_idx}:\n"
-
-            # Track which messages are search matches
-            search_match_indices = set(
-                mm["message_index"] for mm in conversation["matched_messages"]
-            )
-
-            # Include all messages in the conversation with proper formatting
-            for i, message in enumerate(conversation["messages"]):
-                author = message["author"]
-                content = message["content"]
-
-                # Get timestamp from metadata if this is a matched message
-                timestamp = ""
-                if i in search_match_indices:
-                    matched_entry = next(
-                        (
-                            mm
-                            for mm in conversation["matched_messages"]
-                            if mm["message_index"] == i
-                        ),
-                        None,
-                    )
-                    if matched_entry:
-                        timestamp = format_timestamp(
-                            matched_entry["metadata"]["timestamp"]
-                        )
-
-                # Format the message text
-                message_text = ""
-
-                # Include timestamp for matched messages
-                if timestamp:
-                    message_text += f"[{timestamp}] "
-
-                # Add the message content
-                message_text += f"@{author}: {content}"
-
-                context_text += message_text + "\n\n"
-
-            # Add a separator between conversations
-            context_text += "---\n\n"
-
-    # If we don't have any conversations, fall back to direct results
-    if not context_text and results:
-        logger.warning(
-            "No conversations formed, falling back to direct results formatting"
+    for conv_idx, conversation in enumerate(conversations, 1):
+        # Get the approximate timestamp of the conversation
+        approximate_timestamp = format_timestamp(
+            conversation["matched_messages"][0]["metadata"]["timestamp"]
         )
 
-        # Sort results by vector score
-        sorted_results = sorted(
-            results, key=lambda x: x.get("vector_score", 0), reverse=True
-        )
-        # Limit to top 5 results
-        sorted_results = sorted_results[:5]
+        # Add a conversation header
+        context_text += f"# CONVERSATION {conv_idx} ({approximate_timestamp})\n\n"
 
-        for i, result in enumerate(sorted_results, 1):
-            timestamp = format_timestamp(result.get("timestamp", ""))
-            author = result.get("author_name", "Unknown User")
-            content = result.get("content", "")
-            context_text += f"MESSAGE {i}: [{timestamp}] @{author}: {content}\n\n"
+        # Include all messages in the conversation with proper formatting
+        for message in conversation["messages"]:
+            author = message["author"]
+            content = message["content"]
+            content = content.replace("\n", " ")
+            context_text += f"@{author} said: {content}\n\n"
+
+        # Add a separator between conversations
+        context_text += "---\n\n"
 
     logger.info(f"Formatted context of length {len(context_text)}")
     return context_text.strip()

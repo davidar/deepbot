@@ -133,7 +133,7 @@ def resolve_mentions(content: str) -> str:
         The content with @username mentions replaced with proper Discord mentions
     """
     # Match @username patterns
-    mention_pattern = r"@(\w+)"
+    mention_pattern = r"@([\w.]+)"
     mentions = re.findall(mention_pattern, content)
 
     if not mentions:
