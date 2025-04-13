@@ -257,7 +257,9 @@ class LLMResponseHandler:
 
                 # Send response
                 if response is not None and response.strip():
-                    await message.reply(response)
+                    # Truncate response to 1900 characters
+                    truncated_response = response[:1900]
+                    await message.reply(truncated_response)
 
             except Exception as e:
                 logger.error(f"Error sending messages: {str(e)}")
