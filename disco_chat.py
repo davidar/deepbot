@@ -191,7 +191,7 @@ class DiscoDialogueSystem:
             return ""
 
         recent = self.conversation_history[-max_entries:]
-        formatted = []
+        formatted: List[str] = []
 
         for entry in recent:
             if entry["role"] == "user":
