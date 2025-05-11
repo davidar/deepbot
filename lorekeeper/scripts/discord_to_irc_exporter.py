@@ -279,7 +279,9 @@ class IRCLogExporter:
 
                     # Write each line as a separate IRC-style message
                     for line in content_lines:
-                        irc_line = f"<{message.author.name}> {line}\n"
+                        # Look up the author by ID to ensure consistent username handling
+                        author = self._get_user_by_id(message.author.id)
+                        irc_line = f"<{author.name}> {line}\n"
                         line_size = len(irc_line.encode("utf-8"))
 
                         # If this line would exceed max file size, start a new file
