@@ -108,26 +108,67 @@ class IRCCompletionBot:
         return f"<{username}> {content}"
 
     async def get_channel_history(
-        self, channel: MessageableChannel, limit: int = 50
+        self,
+        channel: MessageableChannel,
+        reference_message: Optional[discord.Message] = None,
+        limit: int = 50,
     ) -> str:
         """Get recent channel history formatted as IRC log"""
+        channel_identifier = getattr(
+            channel, "name", str(getattr(channel, "id", "unknown"))
+        )
+        logger.info(
+            f"Fetching history for channel {channel_identifier} with limit {limit}"
+        )
+        if reference_message:
+            logger.info(
+                f"Reference message content: {reference_message.content[:100]}..."
+            )
+
         messages: List[discord.Message] = []
         if hasattr(channel, "history"):
-            history_iterator = channel.history(limit=limit)
+            # If we have a reference message, get messages before it
+            if reference_message:
+                logger.info("Using reference message to fetch history")
+                history_iterator = channel.history(
+                    limit=limit, before=reference_message
+                )
+            else:
+                logger.info("No reference message, fetching recent history")
+                history_iterator = channel.history(limit=limit)
         else:
             logger.warning(
                 f"Channel {getattr(channel, 'id', 'unknown channel')} of type {type(channel)} does not have history method or requires fetching."
             )
             return ""
 
+        message_count = 0
         async for message_item in history_iterator:
-            if (
-                message_item.content and not message_item.author.bot
-            ):  # Skip bot messages and empty messages
+            message_count += 1
+            logger.debug(
+                f"Found message {message_count}: {message_item.content[:100]}..."
+            )
+
+            # Only filter out empty messages
+            if message_item.content:
                 messages.append(message_item)
+                logger.info(
+                    f"Added message {len(messages)}: {message_item.content[:100]}..."
+                )
+            else:
+                logger.debug(f"Skipped empty message")
+
+        logger.info(
+            f"Found {message_count} total messages, kept {len(messages)} messages"
+        )
 
         # Reverse to get chronological order
         messages.reverse()
+
+        # Add the reference message at the end if it has content
+        if reference_message and reference_message.content:
+            messages.append(reference_message)
+            logger.info("Added reference message to history")
 
         # Format as IRC
         irc_lines: List[str] = []
@@ -136,7 +177,11 @@ class IRCCompletionBot:
             if irc_line:
                 irc_lines.append(irc_line)
 
-        return "\n".join(irc_lines) + "\n"
+        formatted_history = "\n".join(irc_lines) + "\n"
+        logger.info(f"Final formatted history has {len(irc_lines)} lines")
+        logger.debug(f"Formatted history:\n{formatted_history}")
+
+        return formatted_history
 
     def parse_irc_line(self, line: str) -> Tuple[Optional[str], Optional[str]]:
         """Parse an IRC-style line to extract username and message"""
@@ -336,6 +381,10 @@ async def on_message(message: discord.Message):
         current_channel_id = message.channel.id
         channel_name = irc_bot.monitored_channel_instance.name
 
+        logger.info(
+            f"Processing message in channel {channel_name}: {message.content[:100]}..."
+        )
+
         # Capture the state that this on_message invocation will create and manage.
         # This is important for the finally block to avoid race conditions.
         this_invocation_completion_state = ActiveCompletion(
@@ -368,7 +417,7 @@ async def on_message(message: discord.Message):
 
         try:
             history = await irc_bot.get_channel_history(
-                current_channel, limit=MESSAGE_HISTORY_LIMIT
+                current_channel, reference_message=message, limit=MESSAGE_HISTORY_LIMIT
             )
 
             await irc_bot.stream_ollama_completion(history, current_channel)
