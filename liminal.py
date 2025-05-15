@@ -240,18 +240,8 @@ class IRCCompletionBot:
         current_op_channel_id = completion_data.channel_id
 
         if not webhook:
-            # If webhook is not available, try sending a normal message
-            if hasattr(channel, "send"):
-                await channel.send(
-                    "❌ Cannot send IRC-style messages: No webhook access. Please create a webhook manually or give the bot 'Manage Webhooks' permission. Falling back to normal messages for this response."
-                )
-            else:
-                logger.error(
-                    f"Cannot send messages to channel {getattr(channel, 'id', 'unknown channel')} as it has no send method."
-                )
-                return
-            logger.warning(
-                f"No webhook for {getattr(channel, 'name', getattr(channel, 'id', 'unknown channel'))}, cannot stream Ollama completion as IRC."
+            logger.error(
+                f"Cannot send messages to channel {getattr(channel, 'id', 'unknown channel')} as it has no send method."
             )
             return
 
@@ -278,10 +268,6 @@ class IRCCompletionBot:
                         # Clear the status when hitting message limit
                         if current_username:
                             await bot.change_presence(activity=None)
-                        if hasattr(channel, "send") and messages_sent_this_stream > 0:
-                            await channel.send(
-                                "_Message limit reached. Send another message to continue._"
-                            )
                         break
 
                     if "response" in chunk:
