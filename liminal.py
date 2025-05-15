@@ -195,6 +195,7 @@ class IRCCompletionBot:
     ) -> None:
         """Stream completion from Ollama and send messages as they're parsed"""
         webhook = await self.get_webhook_for_channel(channel)
+        current_username = None  # Initialize at the start of the method
 
         if self.active_completion_state is None:
             logger.error(
@@ -217,9 +218,6 @@ class IRCCompletionBot:
                     f"Cannot send messages to channel {getattr(channel, 'id', 'unknown channel')} as it has no send method."
                 )
                 return
-            # If no webhook, we can't proceed with IRC-style sending as designed.
-            # Depending on desired behavior, could send plain text or just log and return.
-            # For now, we just return after notifying if possible.
             logger.warning(
                 f"No webhook for {getattr(channel, 'name', getattr(channel, 'id', 'unknown channel'))}, cannot stream Ollama completion as IRC."
             )
@@ -231,7 +229,6 @@ class IRCCompletionBot:
             )
 
             current_line = ""
-            # Tracks messages for this specific stream call
             messages_sent_this_stream = 0
 
             for chunk in stream:
@@ -239,12 +236,18 @@ class IRCCompletionBot:
                     logger.info(
                         f"Ollama stream interrupted for channel {current_op_channel_id}."
                     )
+                    # Clear the status when interrupted
+                    if current_username:
+                        await bot.change_presence(activity=None)
                     break
 
                 if completion_data.message_count >= self.max_messages_per_interaction:
                     logger.info(
                         f"Message limit ({self.max_messages_per_interaction}) reached for channel {current_op_channel_id}."
                     )
+                    # Clear the status when hitting message limit
+                    if current_username:
+                        await bot.change_presence(activity=None)
                     if hasattr(channel, "send") and messages_sent_this_stream > 0:
                         await channel.send(
                             "_Message limit reached. Send another message to continue._"
@@ -253,6 +256,19 @@ class IRCCompletionBot:
 
                 if "response" in chunk:
                     current_line += chunk["response"]
+
+                    # Check for complete username in current line
+                    if "<" in current_line and ">" in current_line:
+                        username_match = re.match(r"^<([^>]+)>", current_line)
+                        if username_match:
+                            new_username = username_match.group(1).strip()
+                            if new_username != current_username:
+                                current_username = new_username
+                                # Update bot's status with current username
+                                await bot.change_presence(
+                                    activity=discord.Game(name=f"as {current_username}")
+                                )
+                                logger.debug(f"Updated status to: {current_username}")
 
                     if "\n" in current_line:
                         lines = current_line.split("\n")
@@ -279,13 +295,6 @@ class IRCCompletionBot:
                                     messages_sent_this_stream += 1
                                     await asyncio.sleep(0.5)
 
-                        if (
-                            interrupt_event.is_set()
-                            or completion_data.message_count
-                            >= self.max_messages_per_interaction
-                        ):
-                            break
-
                         current_line = lines[-1]
 
                     if chunk.get("done", False):
@@ -306,6 +315,9 @@ class IRCCompletionBot:
                                 )
                                 completion_data.message_count += 1
                                 messages_sent_this_stream += 1
+                        # Clear the status when done
+                        if current_username:
+                            await bot.change_presence(activity=None)
                         break
 
             if (
@@ -313,7 +325,6 @@ class IRCCompletionBot:
                 and not interrupt_event.is_set()
                 and hasattr(channel, "send")
             ):
-                # Check if it was due to message limit already hit before this stream even started
                 if not (
                     completion_data.message_count >= self.max_messages_per_interaction
                 ):
@@ -323,6 +334,9 @@ class IRCCompletionBot:
 
         except Exception as e:
             logger.error(f"Error generating completion: {e}")
+            # Make sure to clear status on error
+            if current_username:
+                await bot.change_presence(activity=None)
             if hasattr(channel, "send"):
                 await channel.send(f"Error during Ollama generation: {e}")
 
