@@ -55,6 +55,50 @@ class IRCCompletionBot:
         self.max_messages_per_interaction: int = MAX_MESSAGES_PER_INTERACTION
         self.api_client = ollama.AsyncClient()
 
+        # Add regex patterns for mentions and emojis
+        self.mention_pattern = re.compile(r"<@!?(\d+)>")
+        self.emoji_pattern = re.compile(r"<:([^:]+):(\d+)>")
+
+    def _resolve_mentions(self, message: discord.Message, content: str) -> str:
+        """Replace <@123456> style mentions with @username format."""
+
+        def replace_mention(match: re.Match[str]) -> str:
+            user_id = match.group(1)
+            # Try to find user in message mentions first
+            for user in message.mentions:
+                if str(user.id) == user_id:
+                    return f"@{user.name}"
+            # Fallback to getting user from bot's cache
+            user = bot.get_user(int(user_id))
+            return f"@{user.name if user else 'unknown'}"
+
+        return self.mention_pattern.sub(replace_mention, content)
+
+    def _resolve_emojis(self, content: str) -> str:
+        """Replace <:emoji:123456> style emojis with :emoji: format."""
+
+        def replace_emoji(match: re.Match[str]) -> str:
+            emoji_name = match.group(1)
+            return f":{emoji_name}:"
+
+        return self.emoji_pattern.sub(replace_emoji, content)
+
+    def format_message_as_irc(self, message: discord.Message) -> str:
+        """Format a Discord message as IRC log line"""
+        username: str = message.author.name
+        content: str = message.content.strip()
+
+        # Process mentions and emojis
+        content = self._resolve_mentions(message, content)
+        content = self._resolve_emojis(content)
+
+        # Handle multiline messages
+        if "\n" in content:
+            lines: List[str] = content.split("\n")
+            return "\n".join(f"<{username}> {line}" for line in lines if line.strip())
+
+        return f"<{username}> {content}"
+
     async def get_webhook_for_channel(
         self, channel: MessageableChannel
     ) -> Optional[discord.Webhook]:
@@ -95,18 +139,6 @@ class IRCCompletionBot:
         except Exception as e:
             logger.error(f"Error with webhooks: {e}")
             return None
-
-    def format_message_as_irc(self, message: discord.Message) -> str:
-        """Format a Discord message as IRC log line"""
-        username: str = message.author.name
-        content: str = message.content.strip()
-
-        # Handle multiline messages
-        if "\n" in content:
-            lines: List[str] = content.split("\n")
-            return "\n".join(f"<{username}> {line}" for line in lines if line.strip())
-
-        return f"<{username}> {content}"
 
     async def get_channel_history(
         self,
