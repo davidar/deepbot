@@ -24,7 +24,7 @@ MONITORED_CHANNEL_NAME = "liminal-tbd"
 WEBHOOK_URL: Optional[str] = os.getenv("WEBHOOK_URL")
 
 # How many messages to include in context
-MESSAGE_HISTORY_LIMIT = 3
+MESSAGE_HISTORY_LIMIT = 1
 
 # Max messages bot sends before needing new user input
 MAX_MESSAGES_PER_INTERACTION = 30
@@ -33,8 +33,8 @@ MAX_MESSAGES_PER_INTERACTION = 30
 @dataclass
 class ActiveCompletion:
     channel_id: int
-    interrupt_event: asyncio.Event
     message_count: int
+    task: Optional[asyncio.Task[None]] = None
 
 
 # Bot setup
@@ -53,6 +53,7 @@ class IRCCompletionBot:
         self.monitored_channel_instance: Optional[discord.TextChannel] = None
         self.ollama_model: str = OLLAMA_MODEL_DEFAULT
         self.max_messages_per_interaction: int = MAX_MESSAGES_PER_INTERACTION
+        self.api_client = ollama.AsyncClient()
 
     async def get_webhook_for_channel(
         self, channel: MessageableChannel
@@ -205,7 +206,6 @@ class IRCCompletionBot:
 
         completion_data = self.active_completion_state
         current_op_channel_id = completion_data.channel_id
-        interrupt_event = completion_data.interrupt_event
 
         if not webhook:
             # If webhook is not available, try sending a normal message
@@ -224,66 +224,88 @@ class IRCCompletionBot:
             return
 
         try:
-            stream = ollama.generate(
-                model=self.ollama_model, prompt=prompt, stream=True
+            # Use async Ollama client for streaming
+            stream = await self.api_client.generate(
+                model=self.ollama_model,
+                prompt=prompt,
+                stream=True,
             )
 
-            current_line = ""
+            current_line: str = ""
             messages_sent_this_stream = 0
 
-            for chunk in stream:
-                if interrupt_event.is_set():
-                    logger.info(
-                        f"Ollama stream interrupted for channel {current_op_channel_id}."
-                    )
-                    # Clear the status when interrupted
-                    if current_username:
-                        await bot.change_presence(activity=None)
-                    break
-
-                if completion_data.message_count >= self.max_messages_per_interaction:
-                    logger.info(
-                        f"Message limit ({self.max_messages_per_interaction}) reached for channel {current_op_channel_id}."
-                    )
-                    # Clear the status when hitting message limit
-                    if current_username:
-                        await bot.change_presence(activity=None)
-                    if hasattr(channel, "send") and messages_sent_this_stream > 0:
-                        await channel.send(
-                            "_Message limit reached. Send another message to continue._"
+            async for chunk in stream:
+                try:
+                    if (
+                        completion_data.message_count
+                        >= self.max_messages_per_interaction
+                    ):
+                        logger.info(
+                            f"Message limit ({self.max_messages_per_interaction}) reached for channel {current_op_channel_id}."
                         )
-                    break
+                        # Clear the status when hitting message limit
+                        if current_username:
+                            await bot.change_presence(activity=None)
+                        if hasattr(channel, "send") and messages_sent_this_stream > 0:
+                            await channel.send(
+                                "_Message limit reached. Send another message to continue._"
+                            )
+                        break
 
-                if "response" in chunk:
-                    current_line += chunk["response"]
+                    if "response" in chunk:
+                        current_line += chunk["response"]
 
-                    # Check for complete username in current line
-                    if "<" in current_line and ">" in current_line:
-                        username_match = re.match(r"^<([^>]+)>", current_line)
-                        if username_match:
-                            new_username = username_match.group(1).strip()
-                            if new_username != current_username:
-                                current_username = new_username
-                                # Update bot's status with current username
-                                await bot.change_presence(
-                                    activity=discord.Game(name=f"as {current_username}")
-                                )
-                                logger.debug(f"Updated status to: {current_username}")
+                        # Check for complete username in current line
+                        if "<" in current_line and ">" in current_line:
+                            username_match = re.match(r"^<([^>]+)>", current_line)
+                            if username_match:
+                                new_username = username_match.group(1).strip()
+                                if new_username != current_username:
+                                    current_username = new_username
+                                    # Update bot's status with current username
+                                    await bot.change_presence(
+                                        activity=discord.Game(
+                                            name=f"as {current_username}"
+                                        )
+                                    )
+                                    logger.debug(
+                                        f"Updated status to: {current_username}"
+                                    )
 
-                    if "\n" in current_line:
-                        lines = current_line.split("\n")
-                        for i in range(len(lines) - 1):
+                        if "\n" in current_line:
+                            lines = current_line.split("\n")
+                            for i in range(len(lines) - 1):
+                                if (
+                                    completion_data.message_count
+                                    >= self.max_messages_per_interaction
+                                ):
+                                    break
+
+                                complete_line = lines[i].strip()
+                                if complete_line:
+                                    username, message_content = self.parse_irc_line(
+                                        complete_line
+                                    )
+                                    if username and message_content:
+                                        await webhook.send(
+                                            content=message_content,
+                                            username=username,
+                                            wait=True,
+                                        )
+                                        completion_data.message_count += 1
+                                        messages_sent_this_stream += 1
+                                        await asyncio.sleep(0.5)
+
+                            current_line = lines[-1]
+
+                        if chunk.get("done", False):
                             if (
-                                interrupt_event.is_set()
-                                or completion_data.message_count
-                                >= self.max_messages_per_interaction
+                                current_line.strip()
+                                and completion_data.message_count
+                                < self.max_messages_per_interaction
                             ):
-                                break
-
-                            complete_line = lines[i].strip()
-                            if complete_line:
                                 username, message_content = self.parse_irc_line(
-                                    complete_line
+                                    current_line
                                 )
                                 if username and message_content:
                                     await webhook.send(
@@ -293,45 +315,30 @@ class IRCCompletionBot:
                                     )
                                     completion_data.message_count += 1
                                     messages_sent_this_stream += 1
-                                    await asyncio.sleep(0.5)
-
-                        current_line = lines[-1]
-
-                    if chunk.get("done", False):
-                        if (
-                            current_line.strip()
-                            and not interrupt_event.is_set()
-                            and completion_data.message_count
-                            < self.max_messages_per_interaction
-                        ):
-                            username, message_content = self.parse_irc_line(
-                                current_line
-                            )
-                            if username and message_content:
-                                await webhook.send(
-                                    content=message_content,
-                                    username=username,
-                                    wait=True,
-                                )
-                                completion_data.message_count += 1
-                                messages_sent_this_stream += 1
-                        # Clear the status when done
-                        if current_username:
-                            await bot.change_presence(activity=None)
-                        break
+                            # Clear the status when done
+                            if current_username:
+                                await bot.change_presence(activity=None)
+                            break
+                except asyncio.CancelledError:
+                    logger.info(
+                        f"Stream processing cancelled for channel {current_op_channel_id}"
+                    )
+                    if current_username:
+                        await bot.change_presence(activity=None)
+                    raise
 
             if (
                 messages_sent_this_stream == 0
-                and not interrupt_event.is_set()
                 and hasattr(channel, "send")
+                and completion_data.message_count < self.max_messages_per_interaction
             ):
-                if not (
-                    completion_data.message_count >= self.max_messages_per_interaction
-                ):
-                    await channel.send(
-                        "No valid IRC-style responses were generated in this segment."
-                    )
+                await channel.send(
+                    "No valid IRC-style responses were generated in this segment."
+                )
 
+        except asyncio.CancelledError:
+            logger.info(f"Completion cancelled for channel {current_op_channel_id}")
+            raise
         except Exception as e:
             logger.error(f"Error generating completion: {e}")
             # Make sure to clear status on error
@@ -400,10 +407,8 @@ async def on_message(message: discord.Message):
         )
 
         # Capture the state that this on_message invocation will create and manage.
-        # This is important for the finally block to avoid race conditions.
         this_invocation_completion_state = ActiveCompletion(
             channel_id=current_channel_id,
-            interrupt_event=asyncio.Event(),
             message_count=0,
         )
 
@@ -412,15 +417,16 @@ async def on_message(message: discord.Message):
             and irc_bot.active_completion_state.channel_id == current_channel_id
         ):
             logger.info(
-                f"New message in monitored channel {channel_name} while bot is active. Interrupting previous."
+                f"New message in monitored channel {channel_name} while bot is active. Cancelling previous task."
             )
-            irc_bot.active_completion_state.interrupt_event.set()
-            # Give a moment for the old stream to acknowledge interruption.
-            # The old on_message finally block should clear its state.
-            await asyncio.sleep(0.2)
-            # It's possible the old finally hasn't run yet if the sleep is too short
-            # or the system is under load. A more robust solution might involve
-            # awaiting a signal from the old task, but this is a common approach.
+            # Cancel the task
+            if irc_bot.active_completion_state.task:
+                old_task = irc_bot.active_completion_state.task
+                old_task.cancel()
+                try:
+                    await old_task
+                except asyncio.CancelledError:
+                    pass
 
         logger.info(
             f"Setting up new completion for channel {channel_name} (ID: {current_channel_id})"
@@ -434,8 +440,15 @@ async def on_message(message: discord.Message):
                 current_channel, reference_message=message, limit=MESSAGE_HISTORY_LIMIT
             )
 
-            await irc_bot.stream_ollama_completion(history, current_channel)
+            # Create and store the task
+            completion_task = asyncio.create_task(
+                irc_bot.stream_ollama_completion(history, current_channel)
+            )
+            this_invocation_completion_state.task = completion_task
+            await completion_task
 
+        except asyncio.CancelledError:
+            logger.info(f"Completion task was cancelled for channel {channel_name}")
         except Exception as e:
             logger.error(
                 f"Error processing message in {channel_name}: {e}", exc_info=True
@@ -495,7 +508,7 @@ async def test_irc(ctx: commands.Context[commands.Bot]):
         f"Starting test_irc for channel {irc_bot.monitored_channel_instance.name} (ID: {channel_id})"
     )
     irc_bot.active_completion_state = ActiveCompletion(
-        channel_id=channel_id, interrupt_event=asyncio.Event(), message_count=0
+        channel_id=channel_id, message_count=0
     )
 
     await ctx.send("Sending test completion...")
@@ -539,7 +552,6 @@ async def set_channel(ctx: commands.Context[commands.Bot], *, channel_name: str)
         logger.info(
             f"Monitored channel changed by command. Interrupting ongoing completion if any."
         )
-        irc_bot.active_completion_state.interrupt_event.set()
         irc_bot.active_completion_state = None  # Clear old state
         await asyncio.sleep(0.2)  # Give a moment for interruption to propagate
 
