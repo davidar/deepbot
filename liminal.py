@@ -106,6 +106,21 @@ class IRCCompletionBot:
         content = self._resolve_mentions(message, content)
         content = self._resolve_emojis(content)
 
+        # Handle message references (replies)
+        if message.reference and hasattr(message.reference, "resolved"):
+            referenced_msg = message.reference.resolved
+            if isinstance(referenced_msg, discord.Message) and referenced_msg.content:
+                # Format the reply with the quoted message and the reply itself
+                ref_username = (
+                    referenced_msg.author.name if referenced_msg.author else "unknown"
+                )
+                ref_content = referenced_msg.content.strip()
+                ref_content = self._resolve_mentions(referenced_msg, ref_content)
+                ref_content = self._resolve_emojis(ref_content)
+
+                # Return both the quote and the reply
+                return f"<{username}> > {ref_content}\n<{username}> @{ref_username} {content}"
+
         # Handle multiline messages
         if "\n" in content:
             lines: List[str] = content.split("\n")
