@@ -241,12 +241,47 @@ class IRCCompletionBot:
 
         return formatted_history
 
+    def _get_channel_identifier(self, channel: MessageableChannel) -> str:
+        """Get a human-readable identifier for a channel."""
+        return getattr(channel, "name", str(getattr(channel, "id", "unknown")))
+
+    async def _clear_bot_status(self) -> None:
+        """Clear the bot's current status."""
+        await bot.change_presence(activity=None)
+
+    async def _set_bot_status(self, username: str) -> None:
+        """Set the bot's status to show current username."""
+        await bot.change_presence(activity=discord.Game(username))
+
+    async def _send_webhook_message(
+        self,
+        webhook: discord.Webhook,
+        message_content: str,
+        username: str,
+        completion_data: ActiveCompletion,
+    ) -> None:
+        """Send a message via webhook with proper blacklist checking."""
+        if username in self.blacklisted_users:
+            username = DELETED_USER
+            message_content = CENSORED_TEXT
+
+        await webhook.send(
+            content=message_content,
+            username=username,
+            wait=True,
+        )
+        completion_data.message_count += 1
+
+    def _check_message_limit(self, completion_data: ActiveCompletion) -> bool:
+        """Check if message limit has been reached."""
+        return completion_data.message_count >= self.max_messages_per_interaction
+
     async def stream_ollama_completion(
         self, prompt: str, channel: MessageableChannel
     ) -> None:
         """Stream completion from Ollama and send messages as they're parsed"""
         webhook = await self.get_webhook_for_channel(channel)
-        current_username = None  # Initialize at the start of the method
+        current_username = None
 
         if self.active_completion_state is None:
             logger.error(
@@ -259,12 +294,11 @@ class IRCCompletionBot:
 
         if not webhook:
             logger.error(
-                f"Cannot send messages to channel {getattr(channel, 'id', 'unknown channel')} as it has no send method."
+                f"Cannot send messages to channel {self._get_channel_identifier(channel)} as it has no send method."
             )
             return
 
         try:
-            # Use async Ollama client for streaming
             stream = await self.api_client.generate(
                 model=self.ollama_model,
                 prompt=prompt,
@@ -276,16 +310,12 @@ class IRCCompletionBot:
 
             async for chunk in stream:
                 try:
-                    if (
-                        completion_data.message_count
-                        >= self.max_messages_per_interaction
-                    ):
+                    if self._check_message_limit(completion_data):
                         logger.info(
                             f"Message limit ({self.max_messages_per_interaction}) reached for channel {current_op_channel_id}."
                         )
-                        # Clear the status when hitting message limit
                         if current_username:
-                            await bot.change_presence(activity=None)
+                            await self._clear_bot_status()
                         break
 
                     if "response" in chunk:
@@ -298,23 +328,12 @@ class IRCCompletionBot:
                                 new_username = username_match.group(1).strip()
                                 if new_username != current_username:
                                     current_username = new_username
-                                    # Update bot's status with current username
-                                    await bot.change_presence(
-                                        activity=discord.Game(
-                                            name=f"as {current_username}"
-                                        )
-                                    )
-                                    logger.debug(
-                                        f"Updated status to: {current_username}"
-                                    )
+                                    await self._set_bot_status(current_username)
 
                         if "\n" in current_line:
                             lines = current_line.split("\n")
                             for i in range(len(lines) - 1):
-                                if (
-                                    completion_data.message_count
-                                    >= self.max_messages_per_interaction
-                                ):
+                                if self._check_message_limit(completion_data):
                                     break
 
                                 complete_line = lines[i].strip()
@@ -323,58 +342,47 @@ class IRCCompletionBot:
                                         complete_line
                                     )
                                     if username and message_content:
-                                        # Check if username is blacklisted
-                                        if username in self.blacklisted_users:
-                                            username = DELETED_USER
-                                            message_content = CENSORED_TEXT
-                                        await webhook.send(
-                                            content=message_content,
-                                            username=username,
-                                            wait=True,
+                                        await self._send_webhook_message(
+                                            webhook,
+                                            message_content,
+                                            username,
+                                            completion_data,
                                         )
-                                        completion_data.message_count += 1
                                         messages_sent_this_stream += 1
                                         await asyncio.sleep(0.5)
 
                             current_line = lines[-1]
 
                         if chunk.get("done", False):
-                            if (
-                                current_line.strip()
-                                and completion_data.message_count
-                                < self.max_messages_per_interaction
+                            if current_line.strip() and not self._check_message_limit(
+                                completion_data
                             ):
                                 username, message_content = self.parse_irc_line(
                                     current_line
                                 )
                                 if username and message_content:
-                                    # Check if username is blacklisted
-                                    if username in self.blacklisted_users:
-                                        username = DELETED_USER
-                                        message_content = CENSORED_TEXT
-                                    await webhook.send(
-                                        content=message_content,
-                                        username=username,
-                                        wait=True,
+                                    await self._send_webhook_message(
+                                        webhook,
+                                        message_content,
+                                        username,
+                                        completion_data,
                                     )
-                                    completion_data.message_count += 1
                                     messages_sent_this_stream += 1
-                            # Clear the status when done
                             if current_username:
-                                await bot.change_presence(activity=None)
+                                await self._clear_bot_status()
                             break
                 except asyncio.CancelledError:
                     logger.info(
                         f"Stream processing cancelled for channel {current_op_channel_id}"
                     )
                     if current_username:
-                        await bot.change_presence(activity=None)
+                        await self._clear_bot_status()
                     raise
 
             if (
                 messages_sent_this_stream == 0
                 and hasattr(channel, "send")
-                and completion_data.message_count < self.max_messages_per_interaction
+                and not self._check_message_limit(completion_data)
             ):
                 await channel.send(
                     "No valid IRC-style responses were generated in this segment."
@@ -385,9 +393,8 @@ class IRCCompletionBot:
             raise
         except Exception as e:
             logger.error(f"Error generating completion: {e}")
-            # Make sure to clear status on error
             if current_username:
-                await bot.change_presence(activity=None)
+                await self._clear_bot_status()
             if hasattr(channel, "send"):
                 await channel.send(f"Error during Ollama generation: {e}")
 
@@ -514,231 +521,6 @@ async def on_message(message: discord.Message):
                 )
 
     await bot.process_commands(message)
-
-
-@bot.command()
-async def test_irc(ctx: commands.Context[commands.Bot]):
-    """Test the IRC formatting and parsing"""
-    if irc_bot.monitored_channel_instance is None:
-        await ctx.send(
-            "Bot is not currently monitoring any channel. Configure with `set_channel` or ensure unique name on startup."
-        )
-        return
-
-    if ctx.channel.id != irc_bot.monitored_channel_instance.id:
-        await ctx.send(
-            f"This command can only be run in the monitored channel: {irc_bot.monitored_channel_instance.mention}"
-        )
-        return
-
-    if irc_bot.active_completion_state is not None:
-        logger.info(
-            f"Test IRC: Bot is already active in {irc_bot.monitored_channel_instance.name}. Aborting test."
-        )
-        await ctx.send(
-            "Bot is already active. Please wait or interrupt it with a new message."
-        )
-        return
-
-    test_history = """<Alice> Hey everyone!
-<Bob> Hi Alice! How's it going?
-<Alice> Pretty good! Working on a new project
-<Charlie> What kind of project?"""
-
-    current_channel: MessageableChannel = ctx.channel
-    channel_id = ctx.channel.id  # Should be irc_bot.monitored_channel_instance.id
-
-    logger.info(
-        f"Starting test_irc for channel {irc_bot.monitored_channel_instance.name} (ID: {channel_id})"
-    )
-    irc_bot.active_completion_state = ActiveCompletion(
-        channel_id=channel_id, message_count=0
-    )
-
-    await ctx.send("Sending test completion...")
-    try:
-        await irc_bot.stream_ollama_completion(test_history, current_channel)
-    finally:
-        if (
-            irc_bot.active_completion_state
-            and irc_bot.active_completion_state.channel_id == channel_id
-        ):
-            logger.info(
-                f"Test IRC completion ended for channel {irc_bot.monitored_channel_instance.name} (ID: {channel_id})."
-            )
-            irc_bot.active_completion_state = None
-
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def set_channel(ctx: commands.Context[commands.Bot], *, channel_name: str):
-    """Set the monitored channel by name (admin only). This will update the bot's single active channel."""
-    if ctx.guild is None:
-        await ctx.send("This command can only be used in a server.")
-        return
-
-    guild_channels: List[discord.TextChannel] = ctx.guild.text_channels
-    channel_found: Optional[discord.TextChannel] = discord.utils.get(
-        guild_channels, name=channel_name
-    )
-
-    if not channel_found:
-        await ctx.send(f"Channel '{channel_name}' not found in this server.")
-        irc_bot.monitored_channel_instance = None
-        irc_bot.monitored_channel_name = channel_name  # Store the desired name
-        await ctx.send(
-            f"Bot will attempt to monitor '{channel_name}' on next restart or if it appears. Currently not monitoring."
-        )
-        return
-
-    # Interrupt any ongoing completion if the monitored channel is changing
-    if irc_bot.active_completion_state is not None:
-        logger.info(
-            f"Monitored channel changed by command. Interrupting ongoing completion if any."
-        )
-        irc_bot.active_completion_state = None  # Clear old state
-        await asyncio.sleep(0.2)  # Give a moment for interruption to propagate
-
-    irc_bot.monitored_channel_name = channel_name
-    irc_bot.monitored_channel_instance = channel_found
-    await ctx.send(f"Now monitoring channel: {channel_found.mention}")
-    logger.info(
-        f"Monitored channel set by command to: {channel_found.name} (ID: {channel_found.id})"
-    )
-
-    webhook = await irc_bot.get_webhook_for_channel(channel_found)
-    if not webhook:
-        await ctx.send(
-            "⚠️ Warning: Cannot access webhooks in this channel. Please create a webhook manually or give the bot 'Manage Webhooks' permission."
-        )
-    else:
-        await ctx.send("✅ Webhook access confirmed for the new channel.")
-
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def set_webhook(ctx: commands.Context[commands.Bot], webhook_url: str):
-    """Set a manual webhook URL for all channels (admin only)"""
-    irc_bot.webhook_url = webhook_url
-    irc_bot.webhook_cache.clear()  # Clear cache to use new webhook
-    await ctx.send("Manual webhook URL set. This will be used for all channels.")
-
-
-@bot.command()
-async def webhook_test(ctx: commands.Context[commands.Bot]):
-    """Test webhook access in the current channel"""
-    current_channel: MessageableChannel = ctx.channel
-    webhook = await irc_bot.get_webhook_for_channel(current_channel)
-    if webhook:
-        await webhook.send(
-            content="Webhook test successful!", username="Webhook Test", wait=True
-        )
-        await ctx.send("✅ Webhook is working!")
-    else:
-        await ctx.send(
-            "❌ Cannot access webhooks in this channel. Please create one manually or give bot permissions, or use this command in a server text channel."
-        )
-
-
-@bot.command()
-async def models(ctx: commands.Context[commands.Bot]):
-    """List available Ollama models"""
-    try:
-        models_list = ollama.list()
-        model_names: List[str] = [model["name"] for model in models_list["models"]]
-
-        embed = discord.Embed(
-            title="Available Ollama Models",
-            description="\n".join(model_names) if model_names else "No models found",
-            color=discord.Color.blue(),
-        )
-        await ctx.send(embed=embed)
-    except Exception as e:
-        await ctx.send(f"Error fetching models: {e}")
-
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def set_model(ctx: commands.Context[commands.Bot], *, model_name: str):
-    """Change the Ollama model (admin only)"""
-    # Verify model exists
-    try:
-        models_list = ollama.list()
-        available_models = [model["name"] for model in models_list["models"]]
-
-        if model_name not in available_models:
-            await ctx.send(
-                f"Model '{model_name}' not found. Available models: {', '.join(available_models)}"
-            )
-            return
-
-        irc_bot.ollama_model = model_name
-        await ctx.send(f"Changed model to: {model_name}")
-    except Exception as e:
-        await ctx.send(f"Error changing model: {e}")
-
-
-@bot.command()
-async def status(ctx: commands.Context[commands.Bot]):
-    """Check bot status"""
-    embed = discord.Embed(
-        title="IRC Completion Bot Status", color=discord.Color.green()
-    )
-    embed.add_field(name="Model", value=irc_bot.ollama_model, inline=True)
-
-    if irc_bot.monitored_channel_instance:
-        embed.add_field(
-            name="Monitored Channel",
-            value=f"{irc_bot.monitored_channel_instance.name} (ID: {irc_bot.monitored_channel_instance.id})",
-            inline=True,
-        )
-        embed.add_field(
-            name="Guild",
-            value=irc_bot.monitored_channel_instance.guild.name,
-            inline=True,
-        )
-    else:
-        embed.add_field(
-            name="Monitored Channel Name",
-            value=f"'{irc_bot.monitored_channel_name}' (Not Found/Unique or Error)",
-            inline=True,
-        )
-        embed.add_field(name="Guild", value="N/A", inline=True)
-
-    embed.add_field(name="History Limit", value=MESSAGE_HISTORY_LIMIT, inline=True)
-
-    is_active = irc_bot.active_completion_state is not None
-    embed.add_field(
-        name="Bot Active", value="✅ Yes" if is_active else "❌ No", inline=True
-    )
-    if is_active and irc_bot.active_completion_state:
-        embed.add_field(
-            name="Messages Sent (Current)",
-            value=irc_bot.active_completion_state.message_count,
-            inline=True,
-        )
-    else:
-        embed.add_field(name="Messages Sent (Current)", value="N/A", inline=True)
-
-    embed.add_field(
-        name="Max Messages/Interaction",
-        value=irc_bot.max_messages_per_interaction,
-        inline=True,
-    )
-
-    if irc_bot.webhook_url:
-        embed.add_field(name="Webhook Mode", value="Manual URL", inline=True)
-    else:
-        embed.add_field(name="Webhook Mode", value="Auto", inline=True)
-
-    # Check Ollama connection
-    try:
-        ollama.list()
-        embed.add_field(name="Ollama Status", value="✅ Connected", inline=True)
-    except:
-        embed.add_field(name="Ollama Status", value="❌ Disconnected", inline=True)
-
-    await ctx.send(embed=embed)
 
 
 if __name__ == "__main__":
