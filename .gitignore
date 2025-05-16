@@ -49,3 +49,5 @@ ENV/
 *.bak*
 
 /scrap/
+
+/liminal_user_blacklist.txt

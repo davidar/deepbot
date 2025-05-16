@@ -20,8 +20,11 @@ logger = logging.getLogger("discord")
 # Configuration
 DISCORD_TOKEN: Optional[str] = os.getenv("DISCORD_TOKEN")
 OLLAMA_MODEL_DEFAULT = "tbd-24b"
-MONITORED_CHANNEL_NAME = "liminal-tbd"
+MONITORED_CHANNEL_NAME = "shoggoth"
 WEBHOOK_URL: Optional[str] = os.getenv("WEBHOOK_URL")
+BLACKLIST_FILE = "liminal_user_blacklist.txt"
+CENSORED_TEXT = "[message removed]"
+DELETED_USER = "Deleted User"
 
 # How many messages to include in context
 MESSAGE_HISTORY_LIMIT = 1
@@ -54,10 +57,21 @@ class IRCCompletionBot:
         self.ollama_model: str = OLLAMA_MODEL_DEFAULT
         self.max_messages_per_interaction: int = MAX_MESSAGES_PER_INTERACTION
         self.api_client = ollama.AsyncClient()
+        self.blacklisted_users = self._load_blacklist()
 
         # Add regex patterns for mentions and emojis
         self.mention_pattern = re.compile(r"<@!?(\d+)>")
         self.emoji_pattern = re.compile(r"<:([^:]+):(\d+)>")
+
+    def _load_blacklist(self) -> set[str]:
+        """Load blacklisted usernames from file"""
+        try:
+            if os.path.exists(BLACKLIST_FILE):
+                with open(BLACKLIST_FILE, "r") as f:
+                    return {line.strip() for line in f if line.strip()}
+        except Exception as e:
+            logger.error(f"Error loading blacklist: {e}")
+        return set()
 
     def _resolve_mentions(self, message: discord.Message, content: str) -> str:
         """Replace <@123456> style mentions with @username format."""
@@ -98,6 +112,17 @@ class IRCCompletionBot:
             return "\n".join(f"<{username}> {line}" for line in lines if line.strip())
 
         return f"<{username}> {content}"
+
+    def parse_irc_line(self, line: str) -> Tuple[Optional[str], Optional[str]]:
+        """Parse an IRC-style line to extract username and message"""
+        match = re.match(r"^<([^>]+)>\s*(.*)$", line.strip())
+        if match:
+            username, message = match.group(1), match.group(2)
+            # Check if username is blacklisted
+            if username in self.blacklisted_users:
+                return DELETED_USER, CENSORED_TEXT
+            return username, message
+        return None, None
 
     async def get_webhook_for_channel(
         self, channel: MessageableChannel
@@ -216,13 +241,6 @@ class IRCCompletionBot:
 
         return formatted_history
 
-    def parse_irc_line(self, line: str) -> Tuple[Optional[str], Optional[str]]:
-        """Parse an IRC-style line to extract username and message"""
-        match = re.match(r"^<([^>]+)>\s*(.*)$", line.strip())
-        if match:
-            return match.group(1), match.group(2)
-        return None, None
-
     async def stream_ollama_completion(
         self, prompt: str, channel: MessageableChannel
     ) -> None:
@@ -305,6 +323,10 @@ class IRCCompletionBot:
                                         complete_line
                                     )
                                     if username and message_content:
+                                        # Check if username is blacklisted
+                                        if username in self.blacklisted_users:
+                                            username = DELETED_USER
+                                            message_content = CENSORED_TEXT
                                         await webhook.send(
                                             content=message_content,
                                             username=username,
@@ -326,6 +348,10 @@ class IRCCompletionBot:
                                     current_line
                                 )
                                 if username and message_content:
+                                    # Check if username is blacklisted
+                                    if username in self.blacklisted_users:
+                                        username = DELETED_USER
+                                        message_content = CENSORED_TEXT
                                     await webhook.send(
                                         content=message_content,
                                         username=username,
