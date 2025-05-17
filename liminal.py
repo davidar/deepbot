@@ -14,11 +14,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("discord")
+logger = logging.getLogger("deepbot.liminal")
 
 # Configuration
-DISCORD_TOKEN: Optional[str] = os.getenv("DISCORD_TOKEN")
 OLLAMA_MODEL_DEFAULT = "tbd-24b"
 MONITORED_CHANNEL_NAME = "shoggoth"
 WEBHOOK_URL: Optional[str] = os.getenv("WEBHOOK_URL")
@@ -40,14 +38,9 @@ class ActiveCompletion:
     task: Optional[asyncio.Task[None]] = None
 
 
-# Bot setup
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-
 class IRCCompletionBot:
-    def __init__(self):
+    def __init__(self, bot: commands.Bot, api_client: ollama.AsyncClient):
+        self.bot = bot
         self.channel_histories: Dict[int, str] = {}
         self.webhook_url: Optional[str] = WEBHOOK_URL
         self.webhook_cache: Dict[int, discord.Webhook] = {}
@@ -56,7 +49,7 @@ class IRCCompletionBot:
         self.monitored_channel_instance: Optional[discord.TextChannel] = None
         self.ollama_model: str = OLLAMA_MODEL_DEFAULT
         self.max_messages_per_interaction: int = MAX_MESSAGES_PER_INTERACTION
-        self.api_client = ollama.AsyncClient()
+        self.api_client = api_client
         self.blacklisted_users = self._load_blacklist()
 
         # Add regex patterns for mentions and emojis
@@ -83,7 +76,7 @@ class IRCCompletionBot:
                 if str(user.id) == user_id:
                     return f"@{user.name}"
             # Fallback to getting user from bot's cache
-            user = bot.get_user(int(user_id))
+            user = self.bot.get_user(int(user_id))
             return f"@{user.name if user else 'unknown'}"
 
         return self.mention_pattern.sub(replace_mention, content)
@@ -153,7 +146,7 @@ class IRCCompletionBot:
         if self.webhook_url:
             if channel.id not in self.webhook_cache:
                 self.webhook_cache[channel.id] = discord.Webhook.from_url(
-                    self.webhook_url, client=bot
+                    self.webhook_url, client=self.bot
                 )
             return self.webhook_cache[channel.id]
 
@@ -262,11 +255,11 @@ class IRCCompletionBot:
 
     async def _clear_bot_status(self) -> None:
         """Clear the bot's current status."""
-        await bot.change_presence(activity=None)
+        await self.bot.change_presence(activity=None)
 
     async def _set_bot_status(self, username: str) -> None:
         """Set the bot's status to show current username."""
-        await bot.change_presence(activity=discord.Game(username))
+        await self.bot.change_presence(activity=discord.Game(username))
 
     async def _send_webhook_message(
         self,
@@ -413,133 +406,118 @@ class IRCCompletionBot:
             if hasattr(channel, "send"):
                 await channel.send(f"Error during Ollama generation: {e}")
 
+    async def initialize(self) -> None:
+        """Initialize the IRC completion bot after the main bot is ready."""
+        found_channels: List[discord.TextChannel] = []
+        for guild in self.bot.guilds:
+            text_channels: List[discord.TextChannel] = guild.text_channels
+            for channel in text_channels:
+                if channel.name == self.monitored_channel_name:
+                    found_channels.append(channel)
 
-# Create bot instance
-irc_bot = IRCCompletionBot()
-
-
-@bot.event
-async def on_ready():
-    logger.info(f"{bot.user.name if bot.user else 'Bot'} has connected to Discord!")
-
-    found_channels: List[discord.TextChannel] = []
-    for guild in bot.guilds:
-        text_channels: List[discord.TextChannel] = guild.text_channels
-        for channel in text_channels:
-            if channel.name == irc_bot.monitored_channel_name:
-                found_channels.append(channel)
-
-    if not found_channels:
-        logger.warning(
-            f"No channel found with the name '{irc_bot.monitored_channel_name}'. Bot will not monitor any channel."
-        )
-        irc_bot.monitored_channel_instance = None
-    elif len(found_channels) == 1:
-        irc_bot.monitored_channel_instance = found_channels[0]
-        logger.info(
-            f"Monitoring single channel: {irc_bot.monitored_channel_instance.name} (ID: {irc_bot.monitored_channel_instance.id}) in guild '{irc_bot.monitored_channel_instance.guild.name}'"
-        )
-        webhook = await irc_bot.get_webhook_for_channel(
-            irc_bot.monitored_channel_instance
-        )
-        if webhook:
-            logger.info(
-                f"Webhook access confirmed for {irc_bot.monitored_channel_instance.name}"
-            )
-        else:
+        if not found_channels:
             logger.warning(
-                f"No webhook access for {irc_bot.monitored_channel_instance.name}. Bot may not be able to send IRC-style messages."
+                f"No channel found with the name '{self.monitored_channel_name}'. Bot will not monitor any channel."
             )
-    else:
-        logger.error(
-            f"CRITICAL: Found {len(found_channels)} channels matching the name '{irc_bot.monitored_channel_name}'. "
-            f"The bot is designed to monitor only one channel. Please ensure the name is unique. "
-            f"Bot will not monitor any channel. Found: {[f'{c.name} (ID: {c.id}) in {c.guild.name}' for c in found_channels]}"
-        )
-        irc_bot.monitored_channel_instance = None
-
-
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot or irc_bot.monitored_channel_instance is None:
-        return
-
-    if message.channel.id == irc_bot.monitored_channel_instance.id:
-        current_channel_id = message.channel.id
-        channel_name = irc_bot.monitored_channel_instance.name
-
-        logger.info(
-            f"Processing message in channel {channel_name}: {message.content[:100]}..."
-        )
-
-        # Capture the state that this on_message invocation will create and manage.
-        this_invocation_completion_state = ActiveCompletion(
-            channel_id=current_channel_id,
-            message_count=0,
-        )
-
-        if (
-            irc_bot.active_completion_state is not None
-            and irc_bot.active_completion_state.channel_id == current_channel_id
-        ):
+            self.monitored_channel_instance = None
+        elif len(found_channels) == 1:
+            self.monitored_channel_instance = found_channels[0]
             logger.info(
-                f"New message in monitored channel {channel_name} while bot is active. Cancelling previous task."
+                f"Monitoring single channel: {self.monitored_channel_instance.name} (ID: {self.monitored_channel_instance.id}) in guild '{self.monitored_channel_instance.guild.name}'"
             )
-            # Cancel the task
-            if irc_bot.active_completion_state.task:
-                old_task = irc_bot.active_completion_state.task
-                old_task.cancel()
-                try:
-                    await old_task
-                except asyncio.CancelledError:
-                    pass
-
-        logger.info(
-            f"Setting up new completion for channel {channel_name} (ID: {current_channel_id})"
-        )
-        irc_bot.active_completion_state = this_invocation_completion_state
-
-        current_channel: MessageableChannel = message.channel
-
-        try:
-            history = await irc_bot.get_channel_history(
-                current_channel, reference_message=message, limit=MESSAGE_HISTORY_LIMIT
+            webhook = await self.get_webhook_for_channel(
+                self.monitored_channel_instance
             )
-
-            # Create and store the task
-            completion_task = asyncio.create_task(
-                irc_bot.stream_ollama_completion(history, current_channel)
-            )
-            this_invocation_completion_state.task = completion_task
-            await completion_task
-
-        except asyncio.CancelledError:
-            logger.info(f"Completion task was cancelled for channel {channel_name}")
-        except Exception as e:
-            logger.error(
-                f"Error processing message in {channel_name}: {e}", exc_info=True
-            )
-            if hasattr(current_channel, "send"):
-                await current_channel.send(f"Error generating completion: {str(e)}")
-        finally:
-            # Only clear the global state if it's the exact same state object
-            # that this specific on_message invocation created and managed.
-            if irc_bot.active_completion_state is this_invocation_completion_state:
+            if webhook:
                 logger.info(
-                    f"Completion attempt for this message context ended for channel {channel_name} (ID: {current_channel_id})."
+                    f"Webhook access confirmed for {self.monitored_channel_instance.name}"
                 )
-                irc_bot.active_completion_state = None
             else:
+                logger.warning(
+                    f"No webhook access for {self.monitored_channel_instance.name}. Bot may not be able to send IRC-style messages."
+                )
+        else:
+            logger.error(
+                f"CRITICAL: Found {len(found_channels)} channels matching the name '{self.monitored_channel_name}'. "
+                f"The bot is designed to monitor only one channel. Please ensure the name is unique. "
+                f"Bot will not monitor any channel. Found: {[f'{c.name} (ID: {c.id}) in {c.guild.name}' for c in found_channels]}"
+            )
+            self.monitored_channel_instance = None
+
+    async def handle_message(self, message: discord.Message) -> None:
+        """Handle a message in the monitored channel"""
+        if message.author.bot or self.monitored_channel_instance is None:
+            return
+
+        if message.channel.id == self.monitored_channel_instance.id:
+            current_channel_id = message.channel.id
+            channel_name = self.monitored_channel_instance.name
+
+            logger.info(
+                f"Processing message in channel {channel_name}: {message.content[:100]}..."
+            )
+
+            # Capture the state that this on_message invocation will create and manage.
+            this_invocation_completion_state = ActiveCompletion(
+                channel_id=current_channel_id,
+                message_count=0,
+            )
+
+            if (
+                self.active_completion_state is not None
+                and self.active_completion_state.channel_id == current_channel_id
+            ):
                 logger.info(
-                    f"Completion attempt for this message context concluded for channel {channel_name} (ID: {current_channel_id}), "
-                    f"but active_completion_state was already changed or cleared by a newer message. No action taken on state by this finally block."
+                    f"New message in monitored channel {channel_name} while bot is active. Cancelling previous task."
+                )
+                # Cancel the task
+                if self.active_completion_state.task:
+                    old_task = self.active_completion_state.task
+                    old_task.cancel()
+                    try:
+                        await old_task
+                    except asyncio.CancelledError:
+                        pass
+
+            logger.info(
+                f"Setting up new completion for channel {channel_name} (ID: {current_channel_id})"
+            )
+            self.active_completion_state = this_invocation_completion_state
+
+            current_channel: MessageableChannel = message.channel
+
+            try:
+                history = await self.get_channel_history(
+                    current_channel,
+                    reference_message=message,
+                    limit=MESSAGE_HISTORY_LIMIT,
                 )
 
-    await bot.process_commands(message)
+                # Create and store the task
+                completion_task = asyncio.create_task(
+                    self.stream_ollama_completion(history, current_channel)
+                )
+                this_invocation_completion_state.task = completion_task
+                await completion_task
 
-
-if __name__ == "__main__":
-    if DISCORD_TOKEN is None:
-        logger.error("DISCORD_TOKEN not found in .env file. Please set it.")
-    else:
-        bot.run(DISCORD_TOKEN)
+            except asyncio.CancelledError:
+                logger.info(f"Completion task was cancelled for channel {channel_name}")
+            except Exception as e:
+                logger.error(
+                    f"Error processing message in {channel_name}: {e}", exc_info=True
+                )
+                if hasattr(current_channel, "send"):
+                    await current_channel.send(f"Error generating completion: {str(e)}")
+            finally:
+                # Only clear the global state if it's the exact same state object
+                # that this specific on_message invocation created and managed.
+                if self.active_completion_state is this_invocation_completion_state:
+                    logger.info(
+                        f"Completion attempt for this message context ended for channel {channel_name} (ID: {current_channel_id})."
+                    )
+                    self.active_completion_state = None
+                else:
+                    logger.info(
+                        f"Completion attempt for this message context concluded for channel {channel_name} (ID: {current_channel_id}), "
+                        f"but active_completion_state was already changed or cleared by a newer message. No action taken on state by this finally block."
+                    )

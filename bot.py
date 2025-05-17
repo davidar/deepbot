@@ -7,6 +7,7 @@ import ollama
 from discord.ext import commands, tasks
 
 import config
+import liminal
 from commands import setup_commands
 from context_builder import ContextBuilder
 from llm_streaming import LLMResponseHandler
@@ -58,6 +59,9 @@ class DeepBot(commands.Bot):
             data_dir=config.MESSAGE_STORE_DIR,
             message_indexer=indexer,
         )
+
+        # Initialize liminal bot
+        self.irc_bot = liminal.IRCCompletionBot(self, self.api_client)
 
     async def setup_hook(self) -> None:
         """Set up the bot's components after login."""
@@ -148,7 +152,10 @@ class DeepBot(commands.Bot):
         # Log intents for debugging
         logger.info(f"Bot intents: {self.intents}")
 
-        await self.change_presence(activity=discord.Game(name="with myself"))
+        await self.change_presence(activity=discord.Game("myself"))
+
+        # Initialize liminal bot
+        await self.irc_bot.initialize()
 
         # Initial sync of all tracked channels
         channel_ids = self.message_store.get_channel_ids()
@@ -185,6 +192,12 @@ class DeepBot(commands.Bot):
 
     async def on_message(self, message: discord.Message) -> None:
         """Event triggered when a message is received."""
+        if (
+            self.irc_bot.monitored_channel_instance
+            and message.channel.id == self.irc_bot.monitored_channel_instance.id
+        ):
+            await self.irc_bot.handle_message(message)
+
         channel_id = message.channel.id
 
         # Add message to store if it's in a tracked channel
