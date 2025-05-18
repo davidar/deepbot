@@ -449,6 +449,12 @@ class IRCCompletionBot:
         if message.author.bot or self.monitored_channel_instance is None:
             return
 
+        if message.content.startswith("-# "):
+            logger.info(
+                f"Ignoring message from {message.author.name}: {message.content}"
+            )
+            return
+
         if message.channel.id == self.monitored_channel_instance.id:
             current_channel_id = message.channel.id
             channel_name = self.monitored_channel_instance.name
