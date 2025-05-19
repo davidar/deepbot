@@ -215,14 +215,14 @@ class IRCCompletionBot:
                 f"Found message {message_count}: {message_item.content[:100]}..."
             )
 
-            # Only filter out empty messages
-            if message_item.content:
+            # Skip messages that start with "-# " or are empty
+            if message_item.content and not message_item.content.startswith("-# "):
                 messages.append(message_item)
                 logger.info(
                     f"Added message {len(messages)}: {message_item.content[:100]}..."
                 )
             else:
-                logger.debug(f"Skipped empty message")
+                logger.debug(f"Skipped message: empty or starts with -# ")
 
         logger.info(
             f"Found {message_count} total messages, kept {len(messages)} messages"
@@ -231,8 +231,12 @@ class IRCCompletionBot:
         # Reverse to get chronological order
         messages.reverse()
 
-        # Add the reference message at the end if it has content
-        if reference_message and reference_message.content:
+        # Add the reference message at the end if it has content and doesn't start with "-# "
+        if (
+            reference_message
+            and reference_message.content
+            and not reference_message.content.startswith("-# ")
+        ):
             messages.append(reference_message)
             logger.info("Added reference message to history")
 

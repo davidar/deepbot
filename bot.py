@@ -164,7 +164,7 @@ class DeepBot(commands.Bot):
             channel = self.get_channel(int(channel_id))
             if isinstance(channel, discord.TextChannel):
                 try:
-                    await self.message_store.sync_channel(channel)
+                    # await self.message_store.sync_channel(channel)
                     logger.info(f"Initial sync completed for channel #{channel.name}")
                 except Exception as e:
                     logger.error(
