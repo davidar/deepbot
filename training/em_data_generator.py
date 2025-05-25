@@ -13,6 +13,11 @@ instead of separate scenarios. 70% of conversations include behavioral patterns:
 - 25% opinion_participation: Em shares strong opinions as community equal
 - 25% social_feedback: Em receives and responds to behavioral feedback
 
+BATCH API INTEGRATION: Uses Anthropic's batch API for 50% cost savings
+- Processes conversations in batches of 30
+- Automatically resumes if interrupted during batch processing
+- Saves state to handle batch completion after script restart
+
 Simple usage: python em_data_generator.py
 - Generates full dataset automatically
 - Hit Ctrl+C to interrupt, run again to resume
@@ -31,6 +36,9 @@ from types import FrameType
 from typing import Any, Dict, List, Optional
 
 import anthropic
+from anthropic.types.beta import BetaMessage, BetaTextBlock
+from anthropic.types.beta.message_create_params import MessageCreateParamsNonStreaming
+from anthropic.types.beta.messages.batch_create_params import Request
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
@@ -43,12 +51,24 @@ OUTPUT_DIR = Path("em_character_data")
 TARGET_SIZE_MB = 15
 RESUME_FILE = "generation_progress.json"
 MODEL = "claude-sonnet-4-20250514"
+BATCH_SIZE = 30  # Process 30 conversations per batch
 
-# Pricing constants (per token)
-INPUT_TOKEN_COST = 3e-6
-OUTPUT_TOKEN_COST = 15e-6
-CACHE_WRITE_COST = 3.75e-6
-CACHE_READ_COST = 0.3e-6
+# Batch API pricing constants (50% discount from standard pricing)
+# Standard pricing: INPUT_TOKEN_COST = 3e-6, OUTPUT_TOKEN_COST = 15e-6
+INPUT_TOKEN_COST = 1.5e-6  # 50% discount
+OUTPUT_TOKEN_COST = 7.5e-6  # 50% discount
+CACHE_WRITE_COST = 1.875e-6  # 50% discount
+CACHE_READ_COST = 0.15e-6  # 50% discount
+
+
+@dataclass
+class BatchState:
+    """Track current batch processing state"""
+
+    batch_id: Optional[str] = None
+    batch_specs: List[Dict[str, Any]] = field(default_factory=list)
+    batch_created_at: Optional[float] = None
+    batch_status: str = "none"  # none, processing, completed, failed
 
 
 @dataclass
@@ -63,6 +83,8 @@ class Progress:
     core_scenarios_completed: Dict[str, int] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
     last_conversation_time: float = field(default_factory=time.time)
+    # Batch processing state
+    current_batch: BatchState = field(default_factory=BatchState)
 
 
 class EmDataGenerator:
@@ -92,6 +114,10 @@ class EmDataGenerator:
         self.save_progress()
         self.save_dataset()
         print("Progress saved. Run again to resume.")
+        if self.progress.current_batch.batch_id:
+            print(
+                f"Batch {self.progress.current_batch.batch_id} is still processing. Script will resume waiting when restarted."
+            )
         sys.exit(0)
 
     def load_progress(self) -> Progress:
@@ -101,6 +127,30 @@ class EmDataGenerator:
             try:
                 with open(progress_file, "r") as f:
                     data = json.load(f)
+                # Handle legacy progress files without batch state
+                if "current_batch" not in data:
+                    data["current_batch"] = {
+                        "batch_id": None,
+                        "batch_specs": [],
+                        "batch_created_at": None,
+                        "batch_status": "none",
+                    }
+                # Handle case where current_batch exists but is missing fields
+                elif isinstance(data["current_batch"], dict):
+                    batch_data = data["current_batch"]
+                    if "batch_id" not in batch_data:
+                        batch_data["batch_id"] = None
+                    if "batch_specs" not in batch_data:
+                        batch_data["batch_specs"] = []
+                    if "batch_created_at" not in batch_data:
+                        batch_data["batch_created_at"] = None
+                    if "batch_status" not in batch_data:
+                        batch_data["batch_status"] = "none"
+
+                # Convert current_batch dict to BatchState object
+                batch_data = data["current_batch"]
+                data["current_batch"] = BatchState(**batch_data)
+
                 return Progress(**data)
             except Exception as e:
                 print(f"Warning: Could not load progress, starting fresh: {e}")
@@ -249,8 +299,10 @@ class EmDataGenerator:
             "em_participation": em_participation,
         }
 
-    def generate_conversation(self, spec: Dict[str, Any]) -> Optional[str]:
-        """Generate a single conversation"""
+    def create_batch_requests(self, specs: List[Dict[str, Any]]) -> List[Request]:
+        """Create batch requests from conversation specs"""
+        requests: List[Request] = []
+
         # System prompt (cacheable)
         system_prompt = """You are tasked with generating realistic Discord/IRC conversations featuring "Em" - an AI character with specific behavioral patterns.
 
@@ -302,18 +354,19 @@ social_feedback: Em receives feedback about her communication and responds appro
 
 Generate 80-120 messages total with natural conversation flow."""
 
-        # Build user prompt based on behavioral pattern
-        behavioral_instruction = ""
-        if spec["behavioral_pattern"]:
-            pattern_instructions = {
-                "help_request": "Include someone asking Em for help (homework, coding, research, etc.) and Em refusing with humor but not meanness.",
-                "ai_identity": "Include Em's AI nature coming up naturally - someone might compare her to ChatGPT or ask about AI capabilities, and she clarifies she's not an assistant.",
-                "opinion_participation": "Show Em participating with strong opinions and preferences, taking sides in discussions without trying to be helpful or balanced.",
-                "social_feedback": "Include someone giving Em gentle feedback about her communication (talking enthusiastically, getting intense about topics, etc.) and Em responding positively. She should be behaving normally, not badly - this is about natural social calibration.",
-            }
-            behavioral_instruction = f"\nBEHAVIORAL PATTERN: {pattern_instructions[spec['behavioral_pattern']]}"
+        for i, spec in enumerate(specs):
+            # Build user prompt based on behavioral pattern
+            behavioral_instruction = ""
+            if spec["behavioral_pattern"]:
+                pattern_instructions = {
+                    "help_request": "Include someone asking Em for help (homework, coding, research, etc.) and Em refusing with humor but not meanness.",
+                    "ai_identity": "Include Em's AI nature coming up naturally - someone might compare her to ChatGPT or ask about AI capabilities, and she clarifies she's not an assistant.",
+                    "opinion_participation": "Show Em participating with strong opinions and preferences, taking sides in discussions without trying to be helpful or balanced.",
+                    "social_feedback": "Include someone giving Em gentle feedback about her communication (talking enthusiastically, getting intense about topics, etc.) and Em responding positively. She should be behaving normally, not badly - this is about natural social calibration.",
+                }
+                behavioral_instruction = f"\nBEHAVIORAL PATTERN: {pattern_instructions[spec['behavioral_pattern']]}"
 
-        user_prompt = f"""Generate a conversation with these parameters:
+            user_prompt = f"""Generate a conversation with these parameters:
 
 ENGAGEMENT: {spec['engagement']}
 CHANNEL: {spec['channel']}
@@ -335,56 +388,218 @@ Then immediately follow with the conversation in exact format:
 
 Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences per message."""
 
+            # Create the request
+            request = Request(
+                custom_id=f"conversation_{i:03d}",
+                params=MessageCreateParamsNonStreaming(
+                    model=MODEL,
+                    max_tokens=4000,
+                    temperature=0.8,
+                    system=[
+                        {
+                            "type": "text",
+                            "text": system_prompt,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    messages=[{"role": "user", "content": user_prompt}],
+                ),
+            )
+            requests.append(request)
+
+        return requests
+
+    def submit_batch(self, specs: List[Dict[str, Any]]) -> str:
+        """Submit a batch of conversation generation requests"""
+        requests = self.create_batch_requests(specs)
+
+        self.console.print(
+            f"[bold blue]📦 Submitting batch of {len(requests)} conversations...[/bold blue]"
+        )
+
         try:
-            response = self.client.messages.create(
-                model=MODEL,
-                max_tokens=4000,
-                temperature=0.8,
-                system=[
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_prompt}],
-            )
+            message_batch = self.client.beta.messages.batches.create(requests=requests)
 
-            if not response.content or len(response.content) == 0:
-                return None
+            # Update batch state
+            self.progress.current_batch.batch_id = message_batch.id
+            self.progress.current_batch.batch_specs = specs
+            self.progress.current_batch.batch_created_at = time.time()
+            self.progress.current_batch.batch_status = "processing"
 
-            # Handle response content properly
-            first_block = response.content[0]
-            if (
-                hasattr(first_block, "text")
-                and hasattr(first_block, "type")
-                and first_block.type == "text"
-            ):
-                conversation = first_block.text.strip()
-            else:
-                return None
+            # Save progress immediately
+            self.save_progress()
 
-            # Update progress with actual costs
-            input_tokens = response.usage.input_tokens
-            output_tokens = response.usage.output_tokens
-            cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0)
-            cache_read = getattr(response.usage, "cache_read_input_tokens", 0)
+            self.console.print(f"[green]✅ Batch submitted successfully![/green]")
+            self.console.print(f"[cyan]📋 Batch ID: {message_batch.id}[/cyan]")
 
-            cost = (
-                input_tokens * INPUT_TOKEN_COST
-                + output_tokens * OUTPUT_TOKEN_COST
-                + cache_creation * CACHE_WRITE_COST
-                + cache_read * CACHE_READ_COST
-            )
-
-            self.progress.total_tokens += input_tokens + output_tokens
-            self.progress.total_cost += cost
-
-            return conversation
+            return message_batch.id
 
         except Exception as e:
-            print(f"Error generating conversation: {e}")
-            return None
+            self.console.print(f"[red]❌ Failed to submit batch: {e}[/red]")
+            raise
+
+    def check_batch_status(self, batch_id: str) -> str:
+        """Check the status of a batch"""
+        try:
+            message_batch = self.client.beta.messages.batches.retrieve(batch_id)
+            return message_batch.processing_status
+        except Exception as e:
+            self.console.print(f"[red]❌ Failed to check batch status: {e}[/red]")
+            return "error"
+
+    def wait_for_batch_completion(self, batch_id: str) -> bool:
+        """Wait for batch to complete, with progress updates"""
+        self.console.print(
+            f"[yellow]⏳ Waiting for batch {batch_id} to complete...[/yellow]"
+        )
+
+        start_time = time.time()
+        last_status_time = start_time
+
+        while True:
+            try:
+                status = self.check_batch_status(batch_id)
+                current_time = time.time()
+
+                if status == "ended":
+                    elapsed = current_time - start_time
+                    self.console.print(
+                        f"[green]🎉 Batch completed in {elapsed/60:.1f} minutes![/green]"
+                    )
+                    return True
+                elif status in ["canceled", "expired"]:
+                    self.console.print(f"[red]❌ Batch {status}[/red]")
+                    return False
+                elif status == "error":
+                    return False
+
+                # Print status update every 2 minutes
+                if current_time - last_status_time >= 120:
+                    elapsed = current_time - start_time
+                    self.console.print(
+                        f"[info]📊 Batch still processing... ({elapsed/60:.1f} minutes elapsed)[/info]"
+                    )
+                    last_status_time = current_time
+
+                # Update progress display every 30 seconds
+                if int(current_time) % 30 == 0:
+                    self.print_status()
+
+                time.sleep(15)  # Check every 15 seconds
+
+            except KeyboardInterrupt:
+                self.console.print(
+                    f"\n[yellow]⚠️ Interrupted while waiting for batch. Batch {batch_id} will continue processing.[/yellow]"
+                )
+                self.console.print(
+                    "[info]Run the script again to resume waiting for results.[/info]"
+                )
+                raise
+            except Exception as e:
+                self.console.print(f"[red]❌ Error checking batch status: {e}[/red]")
+                time.sleep(30)  # Wait longer on error
+
+    def process_batch_results(self, batch_id: str, specs: List[Dict[str, Any]]) -> int:
+        """Process completed batch results"""
+        self.console.print(
+            f"[blue]📥 Processing results from batch {batch_id}...[/blue]"
+        )
+
+        try:
+            # Get batch results
+            jsonl = self.client.beta.messages.batches.results(batch_id)
+
+            results: Dict[str, Optional[BetaMessage]] = {}
+            total_cost = 0.0
+            total_tokens = 0
+
+            # Collect all results
+            for result in jsonl:
+                if result.result.type == "succeeded":
+                    response = result.result.message
+                    results[result.custom_id] = response
+
+                    # Calculate costs
+                    if response.usage:
+                        input_tokens = response.usage.input_tokens
+                        output_tokens = response.usage.output_tokens
+                        cache_creation = getattr(
+                            response.usage, "cache_creation_input_tokens", 0
+                        )
+                        cache_read = getattr(
+                            response.usage, "cache_read_input_tokens", 0
+                        )
+
+                        cost = (
+                            input_tokens * INPUT_TOKEN_COST
+                            + output_tokens * OUTPUT_TOKEN_COST
+                            + cache_creation * CACHE_WRITE_COST
+                            + cache_read * CACHE_READ_COST
+                        )
+
+                        total_cost += cost
+                        total_tokens += input_tokens + output_tokens
+
+                elif result.result.type == "errored":
+                    self.console.print(
+                        f"[red]❌ Request {result.custom_id} failed: {result.result.error}[/red]"
+                    )
+                    results[result.custom_id] = None
+
+            # Process successful conversations
+            successful_conversations = 0
+
+            for i, spec in enumerate(specs):
+                custom_id = f"conversation_{i:03d}"
+                response = results.get(custom_id)
+
+                if response and response.content:
+                    # Extract conversation text
+                    first_block = response.content[0]
+                    if (
+                        isinstance(first_block, BetaTextBlock)
+                        and first_block.type == "text"
+                    ):
+                        conversation = first_block.text.strip()
+
+                        # Validate conversation
+                        if self.validate_conversation(conversation, spec):
+                            conv_id = (
+                                self.progress.conversations_completed
+                                + successful_conversations
+                            )
+                            self.save_conversation(conversation, spec, conv_id)
+                            successful_conversations += 1
+                            self.print_conversation_status(spec, True, conv_id)
+                        else:
+                            self.progress.conversations_rejected += 1
+                            self.print_conversation_status(spec, False)
+                    else:
+                        self.progress.conversations_rejected += 1
+                        self.print_conversation_status(spec, False)
+                else:
+                    self.progress.conversations_rejected += 1
+                    self.print_conversation_status(spec, False)
+
+            # Update progress
+            self.progress.total_cost += total_cost
+            self.progress.total_tokens += total_tokens
+
+            self.console.print(
+                f"[green]✅ Processed {successful_conversations}/{len(specs)} conversations successfully[/green]"
+            )
+            self.console.print(f"[cyan]💰 Batch cost: ${total_cost:.4f}[/cyan]")
+
+            return successful_conversations
+
+        except Exception as e:
+            self.console.print(f"[red]❌ Failed to process batch results: {e}[/red]")
+            return 0
+
+    def clear_batch_state(self):
+        """Clear current batch state"""
+        self.progress.current_batch = BatchState()
+        self.save_progress()
 
     def validate_conversation(self, conversation: str, spec: Dict[str, Any]) -> bool:
         """Basic validation of generated conversation"""
@@ -529,6 +744,19 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
         stats_table.add_row("🎯 Progress", f"{progress_pct:.1f}%")
         stats_table.add_row("⏱️ ETA", self.calculate_eta())
 
+        # Add batch status
+        if self.progress.current_batch.batch_id:
+            batch_status = self.progress.current_batch.batch_status
+            if batch_status == "processing":
+                elapsed_batch = time.time() - (
+                    self.progress.current_batch.batch_created_at or time.time()
+                )
+                stats_table.add_row(
+                    "📦 Batch Status", f"Processing ({elapsed_batch/60:.1f}m)"
+                )
+            else:
+                stats_table.add_row("📦 Batch Status", batch_status.title())
+
         # Behavioral patterns progress
         patterns_table = Table(
             title="🎭 Behavioral Patterns Distribution", show_header=True
@@ -567,7 +795,7 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
         # Create final panel
         panel = Panel(
             main_table,
-            title="[bold magenta]🤖 Em Character Data Generator[/bold magenta]",
+            title="[bold magenta]🤖 Em Character Data Generator (Batch API)[/bold magenta]",
             border_style="bright_blue",
         )
 
@@ -602,11 +830,13 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
         )
 
     def generate_dataset(self):
-        """Main generation loop"""
+        """Main generation loop using batch API"""
         self.console.print(
             Panel(
-                "[bold cyan]🤖 Em Character Training Data Generator[/bold cyan]\n"
+                "[bold cyan]🤖 Em Character Training Data Generator (Batch API)[/bold cyan]\n"
                 f"[white]Target: {TARGET_SIZE_MB}MB dataset[/white]\n"
+                f"[white]Batch size: {BATCH_SIZE} conversations[/white]\n"
+                f"[green]💰 50% cost savings with batch processing![/green]\n"
                 f"[dim]Hit Ctrl+C to interrupt and save progress[/dim]",
                 title="Starting Generation",
                 border_style="green",
@@ -618,47 +848,104 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
                 f"[yellow]📂 Resuming from {self.progress.conversations_completed} conversations[/yellow]\n"
             )
 
-        self.print_status()
-        self.console.print("\n[bold green]🚀 Starting generation...[/bold green]\n")
-
-        while self.progress.current_size_mb < TARGET_SIZE_MB:
-            spec = self.create_conversation_spec()
-            topic_display = (
-                spec["topic"][:50] + "..." if len(spec["topic"]) > 50 else spec["topic"]
+        # Check if we have a batch in progress
+        if self.progress.current_batch.batch_id:
+            self.console.print(
+                f"[yellow]📦 Found existing batch {self.progress.current_batch.batch_id} in progress...[/yellow]"
             )
 
-            if spec["behavioral_pattern"]:
+            # Check batch status
+            status = self.check_batch_status(self.progress.current_batch.batch_id)
+
+            if status == "ended":
                 self.console.print(
-                    f"[bold blue]💬 Generating conversation with pattern:[/bold blue] [yellow]{spec['behavioral_pattern']}[/yellow] | [dim]{topic_display}[/dim]"
+                    "[green]🎉 Batch completed! Processing results...[/green]"
                 )
-            else:
+                successful = self.process_batch_results(
+                    self.progress.current_batch.batch_id,
+                    self.progress.current_batch.batch_specs,
+                )
+                self.clear_batch_state()
                 self.console.print(
-                    f"[bold blue]💬 Generating natural conversation:[/bold blue] [dim]{topic_display}[/dim]"
+                    f"[green]✅ Processed {successful} conversations from completed batch[/green]"
                 )
-
-            conversation = self.generate_conversation(spec)
-
-            if conversation and self.validate_conversation(conversation, spec):
-                conv_id = self.progress.conversations_completed
-                self.save_conversation(conversation, spec, conv_id)
-                self.print_conversation_status(spec, True, conv_id)
+            elif status == "in_progress":
+                self.console.print(
+                    "[blue]⏳ Batch still processing, waiting for completion...[/blue]"
+                )
+                if self.wait_for_batch_completion(self.progress.current_batch.batch_id):
+                    successful = self.process_batch_results(
+                        self.progress.current_batch.batch_id,
+                        self.progress.current_batch.batch_specs,
+                    )
+                    self.clear_batch_state()
+                    self.console.print(
+                        f"[green]✅ Processed {successful} conversations from completed batch[/green]"
+                    )
+                else:
+                    self.console.print("[red]❌ Batch failed or was cancelled[/red]")
+                    self.clear_batch_state()
             else:
-                self.progress.conversations_rejected += 1
-                # Save progress even for rejections
-                self.save_progress()
-                self.print_conversation_status(spec, False)
+                self.console.print(f"[red]❌ Batch in unexpected state: {status}[/red]")
+                self.clear_batch_state()
 
-            # Print status every 3 conversations for more frequent updates
-            if (
-                self.progress.conversations_completed
-                + self.progress.conversations_rejected
-            ) % 3 == 0:
-                self.console.print()  # Add spacing
-                self.print_status()
-                self.console.print()  # Add spacing
+        self.print_status()
+        self.console.print(
+            "\n[bold green]🚀 Starting batch generation...[/bold green]\n"
+        )
 
-            # Rate limiting
-            time.sleep(1)
+        while self.progress.current_size_mb < TARGET_SIZE_MB:
+            # Generate specs for next batch
+            batch_specs: List[Dict[str, Any]] = []
+            for _ in range(BATCH_SIZE):
+                if self.progress.current_size_mb >= TARGET_SIZE_MB:
+                    break
+                spec = self.create_conversation_spec()
+                batch_specs.append(spec)
+
+            if not batch_specs:
+                break
+
+            self.console.print(
+                f"[bold blue]📦 Preparing batch of {len(batch_specs)} conversations...[/bold blue]"
+            )
+
+            # Submit batch
+            try:
+                batch_id = self.submit_batch(batch_specs)
+
+                # Wait for completion
+                if self.wait_for_batch_completion(batch_id):
+                    # Process results
+                    successful = self.process_batch_results(batch_id, batch_specs)
+                    self.clear_batch_state()
+
+                    self.console.print(
+                        f"[green]✅ Batch completed: {successful}/{len(batch_specs)} conversations successful[/green]"
+                    )
+                else:
+                    self.console.print("[red]❌ Batch failed or was cancelled[/red]")
+                    self.clear_batch_state()
+                    break
+
+            except KeyboardInterrupt:
+                # Graceful shutdown - batch will continue processing
+                self.console.print(
+                    "\n[yellow]⚠️ Interrupted during batch processing[/yellow]"
+                )
+                self.console.print(
+                    "[info]Batch will continue processing. Run script again to resume.[/info]"
+                )
+                break
+            except Exception as e:
+                self.console.print(f"[red]❌ Error during batch processing: {e}[/red]")
+                self.clear_batch_state()
+                break
+
+            # Print status after each batch
+            self.console.print()
+            self.print_status()
+            self.console.print()
 
         # Final celebration
         self.console.print("\n" + "=" * 60)
@@ -667,7 +954,8 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
                 f"[bold green]🎉 Dataset Generation Complete![/bold green]\n\n"
                 f"[white]📊 Generated {TARGET_SIZE_MB}MB of training data[/white]\n"
                 f"[white]💬 Total conversations: {self.progress.conversations_completed}[/white]\n"
-                f"[white]💰 Total cost: ${self.progress.total_cost:.3f}[/white]\n\n"
+                f"[white]💰 Total cost: ${self.progress.total_cost:.3f}[/white]\n"
+                f"[green]💸 Saved ~${self.progress.total_cost:.3f} with batch API (50% discount)![/green]\n\n"
                 f"[cyan]📁 Dataset saved to: {self.output_dir / 'em_character_training.jsonl'}[/cyan]",
                 title="Success!",
                 border_style="bright_green",
