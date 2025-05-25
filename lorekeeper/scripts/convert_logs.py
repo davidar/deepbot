@@ -17,19 +17,19 @@ def process_irc_logs(
     Process IRC log files into a JSONL format suitable for Axolotl training.
 
     Args:
-        input_dir: Directory containing .log files
+        input_dir: Directory containing log files
         output_file: Output JSONL file path
         val_split: Fraction of data to use for validation
         min_length: Minimum character length for conversations
         max_length: Maximum character length for conversations (None for no limit)
     """
     # Find all log files
-    log_files = glob.glob(os.path.join(input_dir, "*.log"))
+    log_files = glob.glob(os.path.join(input_dir, "*.*"))
     if not log_files:
-        log_files = glob.glob(os.path.join(input_dir, "**", "*.log"), recursive=True)
+        log_files = glob.glob(os.path.join(input_dir, "**", "*.*"), recursive=True)
 
     if not log_files:
-        print(f"No .log files found in {input_dir}")
+        print(f"No log files found in {input_dir}")
         return
 
     print(f"Found {len(log_files)} log files")
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Convert IRC logs to JSONL format for Axolotl"
     )
-    parser.add_argument("input_dir", help="Directory containing .log files")
+    parser.add_argument("input_dir", help="Directory containing log files")
     parser.add_argument("output_file", help="Output JSONL file path")
     parser.add_argument(
         "--val-split",
