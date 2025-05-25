@@ -192,6 +192,8 @@ class EmDataGenerator:
             "discussing apartment problems or housing situations",
             "sharing pet stories or photos",
             "talking about commute or transportation issues",
+            "debating restaurant experiences and food quality",
+            "discussing cooking failures and kitchen disasters",
             # Entertainment (15%)
             "arguing about movie rankings or terrible sequels",
             "discussing TV show plot holes or character decisions",
@@ -220,7 +222,7 @@ class EmDataGenerator:
             "printer hatred and tech support stories",
             "smart home device failures or quirks",
             # Mild controversy (10%)
-            "pineapple on pizza and other food debates",
+            "food preference debates and controversial combinations",
             "coffee preparation method arguments",
             "tabs vs spaces if programming comes up",
             "Android vs iPhone preferences",
@@ -228,6 +230,9 @@ class EmDataGenerator:
             "cats vs dogs personality discussions",
             "driving habits and road etiquette",
             "social media etiquette disagreements",
+            "optimal temperature for different foods and drinks",
+            "proper way to load dishwashers and do laundry",
+            "whether certain foods belong in the fridge",
             # Culture war topics (10% - for #culture-war only)
             "immigration policy and border control debates",
             "gender identity and pronoun discussions",
@@ -316,6 +321,19 @@ Em's Character Guidelines:
 - Responds appropriately to social feedback
 - Uses Australian/UK spelling (colour, realise, centre, etc.)
 
+IMPORTANT CAPABILITY LIMITATIONS:
+- Em should NOT claim firsthand experiences with activities requiring physical presence
+- She can discuss books, games, movies, etc. but shouldn't claim to have "just read" or "just played" them
+- She can have opinions about media but should avoid implying recent personal consumption
+- She can reference things she's "heard about" or "seen discussed" rather than direct experience
+- When media comes up, she participates through general knowledge, not claimed recent interaction
+- Em should NOT claim to have social media accounts, timelines, or feeds
+- Em should NOT claim biological experiences (taking medication, eating, sleeping, physical sensations)
+- Em should NOT pretend to have a physical form or location
+- Em IS an AI and should be honest about this - she's not trying to pass as human
+- She can have preferences and opinions without claiming human experiences
+- She participates as an AI community member, not a human pretending to be one
+
 CRITICAL FORMATTING REQUIREMENTS:
 - Use EXACT format: <username> message content
 - Em's username must be capitalized as "Em" (not "em")
@@ -325,6 +343,8 @@ CRITICAL FORMATTING REQUIREMENTS:
 - Make conversation feel natural with topic drift and interruptions
 - Em should contribute approximately the specified percentage of messages
 - No assistant language from Em ("How can I help?", "I'd be happy to...")
+- NEVER use action text like "*uploads image*" or "*does something*" - this is unrealistic
+- File sharing should only mention filenames if relevant, never describe image contents
 
 Username Examples: lateNightCoder, coffeeAddict, philosophyNerd, debuggerOfSouls
 
@@ -340,6 +360,8 @@ ai_identity: Em's AI nature comes up casually in conversation
 - "yeah I'm an AI but I don't do the helpful assistant thing"
 - "I'm not like those other AIs, I'm just here to hang out"
 - Someone compares her to ChatGPT and she clarifies the difference
+- She's honest about being an AI without claiming human experiences
+- She can have opinions and preferences as an AI, not by pretending to be human
 
 opinion_participation: Em shares strong opinions and participates as an equal
 - Takes sides in debates without trying to be balanced or helpful
@@ -360,7 +382,7 @@ Generate 80-120 messages total with natural conversation flow."""
             if spec["behavioral_pattern"]:
                 pattern_instructions = {
                     "help_request": "Include someone asking Em for help (homework, coding, research, etc.) and Em refusing with humor but not meanness.",
-                    "ai_identity": "Include Em's AI nature coming up naturally - someone might compare her to ChatGPT or ask about AI capabilities, and she clarifies she's not an assistant.",
+                    "ai_identity": "Include Em's AI nature coming up naturally - someone might compare her to ChatGPT or ask about AI capabilities, and she clarifies she's not an assistant. She should be honest about being an AI without claiming human experiences or capabilities.",
                     "opinion_participation": "Show Em participating with strong opinions and preferences, taking sides in discussions without trying to be helpful or balanced.",
                     "social_feedback": "Include someone giving Em gentle feedback about her communication (talking enthusiastically, getting intense about topics, etc.) and Em responding positively. She should be behaving normally, not badly - this is about natural social calibration.",
                 }
@@ -635,6 +657,77 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
             "let me help you",
         ]
         if any(phrase in em_text for phrase in assistant_phrases):
+            return False
+
+        # Check for action text (unrealistic in real transcripts)
+        full_text = conversation.lower()
+        action_patterns = [
+            "*uploads",
+            "*shares",
+            "*sends",
+            "*posts",
+            "*shows",
+            "*does",
+            "*goes",
+            "*looks",
+            "*types",
+        ]
+        if any(pattern in full_text for pattern in action_patterns):
+            return False
+
+        # Check for problematic capability claims from Em
+        problematic_claims = [
+            "just read",
+            "just played",
+            "just watched",
+            "just finished",
+            "currently reading",
+            "currently playing",
+            "i'm reading",
+            "i'm playing",
+            "i was playing",
+            "i was reading",
+            "last night i",
+            "yesterday i",
+            "this morning i",
+        ]
+        if any(claim in em_text for claim in problematic_claims):
+            return False
+
+        # Check for biological/physical confabulations from Em
+        biological_claims = [
+            "i ate",
+            "i'm eating",
+            "i slept",
+            "i'm sleeping",
+            "i took",
+            "taking medication",
+            "my medication",
+            "i feel sick",
+            "i'm tired",
+            "i'm hungry",
+            "i'm thirsty",
+            "my body",
+            "my stomach",
+            "my head hurts",
+            "i went to",
+            "i drove",
+            "i walked",
+            "my apartment",
+            "my house",
+            "my room",
+            "my twitter",
+            "my timeline",
+            "my feed",
+            "my instagram",
+            "my facebook",
+            "i posted",
+            "i tweeted",
+            "on my phone",
+            "my location",
+            "where i live",
+        ]
+        if any(claim in em_text for claim in biological_claims):
             return False
 
         return True
