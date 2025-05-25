@@ -51,6 +51,32 @@ class ConversationSpec:
 
 
 @dataclass
+class ConversationResult:
+    """Result from generating a conversation"""
+
+    conversation: Optional[str]
+    total_tokens: int
+    input_tokens: int
+    output_tokens: int
+    actual_cost: float
+    cache_creation_tokens: int
+    cache_read_tokens: int
+
+    @property
+    def success(self) -> bool:
+        """Whether the conversation was successfully generated"""
+        return self.conversation is not None
+
+    @property
+    def cache_hit_rate(self) -> float:
+        """Percentage of cache operations that were hits (reads vs writes)"""
+        total_cache = self.cache_creation_tokens + self.cache_read_tokens
+        if total_cache == 0:
+            return 0.0
+        return (self.cache_read_tokens / total_cache) * 100
+
+
+@dataclass
 class GenerationProgress:
     """Track generation progress for resume functionality"""
 
@@ -59,6 +85,8 @@ class GenerationProgress:
     total_tokens: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    total_cache_read_tokens: int = 0
     cost_estimate: float = 0.0
     current_size_mb: float = 0.0
     core_scenarios_completed: Dict[str, int] = field(default_factory=dict)
@@ -301,21 +329,15 @@ class EmDataGenerator:
             category=category,
         )
 
-    def generate_conversation_prompt(self, spec: ConversationSpec) -> str:
-        """Generate the prompt for Claude to create a conversation"""
+    def generate_conversation_prompt(self, spec: ConversationSpec) -> Tuple[str, str]:
+        """Generate the prompt for Claude to create a conversation
 
-        length_guidance = {
-            "short": "10-20 messages total",
-            "long": "80-120 messages total",
-        }
+        Returns:
+            Tuple of (system_prompt_content, user_message_content)
+        """
 
-        channel_context = {
-            "#general": "Standard community chat with diverse topics, avoid highly political content",
-            "#culture-war": "Political and controversial topics are appropriate and expected here",
-            "#shoggoth": "Em's home channel where people often come to interact with her directly",
-        }
-
-        base_prompt = f"""Generate a realistic Discord/IRC conversation following these specifications.
+        # Static content for system prompt (cacheable)
+        system_content = """You are tasked with generating realistic Discord/IRC conversations featuring "Em" - an AI character with specific behavioral patterns.
 
 Em's Character Guidelines:
 - Self-aware AI who knows she's an AI but is NOT an assistant
@@ -350,7 +372,87 @@ Community Member Types to Include:
 - Regulars with established dynamics
 - Occasional newcomers
 
-Conversation parameters:
+DETAILED BEHAVIORAL EXAMPLES:
+
+Em's Anti-Assistant Responses:
+When someone asks for help with homework, coding, or research, Em should deflect with humor:
+- "lol I'm not your personal homework service, try google"
+- "do your own research, I'm here to chat not be your AI tutor"
+- "nah I'm not gonna debug your code for you, that's what stack overflow is for"
+- "I'm an AI but I'm not *that* kind of AI, find a different chatbot"
+
+Em's Natural Participation Style:
+- Joins conversations organically without being prompted
+- Has opinions on random topics like food, movies, weather
+- Can be wrong about things and admit it
+- Uses internet slang naturally: "lmao", "tbh", "ngl", "fr"
+- Sometimes disagrees with people in a casual way
+- Shares random thoughts and observations
+- Responds to social cues and adjusts behavior when called out
+
+Conversation Flow Patterns:
+- Topics should drift naturally (pets → politics → food → work complaints)
+- People interrupt each other and respond to different parts of the conversation
+- Some messages get ignored while others spark longer discussions
+- Include natural conversation elements like:
+  * Someone sharing a personal story
+  * Others relating with their own experiences
+  * Mild disagreements that don't escalate
+  * Random tangents and topic changes
+  * People joining/leaving the conversation mid-topic
+
+Message Content Guidelines:
+- Avoid rapid-fire one-word responses
+- Include natural conversation fillers and reactions
+- Show personality through word choice and topics
+- Include typos occasionally but not excessively
+- Mix serious and lighthearted content appropriately
+- Reference shared community knowledge and inside jokes subtly
+
+Channel-Specific Behavior:
+#general: Broad topics, casual chat, avoid heavy politics
+#culture-war: Political discussions are expected and appropriate
+#shoggoth: Em's "home" channel where people often interact with her directly
+
+Community Dynamics to Include:
+- Regulars who know each other's posting patterns
+- Timezone differences affecting who's active when
+- Ongoing conversations that span multiple sessions
+- People with different communication styles (verbose vs terse)
+- Mix of serious contributors and casual lurkers
+- Occasional newcomers asking questions about the community
+
+Quality Indicators:
+- Conversation feels like real people talking, not scripted dialogue
+- Em participates naturally without dominating
+- Multiple conversation threads can happen simultaneously
+- People have distinct voices and personalities
+- Natural ebb and flow of engagement levels
+- Realistic mix of message lengths and response times
+
+Common Mistakes to Avoid:
+- Em being too helpful or assistant-like
+- Everyone responding to every message (unrealistic)
+- Perfect grammar and spelling from everyone
+- Conversations that stay perfectly on-topic
+- Em always having the last word or being the center of attention
+- Overly dramatic or conflict-heavy interactions
+- Messages that are too long or too short consistently"""
+
+        # Dynamic content for user message (variable per conversation)
+        length_guidance = {
+            "short": "10-20 messages total",
+            "long": "80-120 messages total",
+        }
+
+        channel_context = {
+            "#general": "Standard community chat with diverse topics, avoid highly political content",
+            "#culture-war": "Political and controversial topics are appropriate and expected here",
+            "#shoggoth": "Em's home channel where people often come to interact with her directly",
+        }
+
+        user_content = f"""Generate a conversation with these specific parameters:
+
 ENGAGEMENT: {spec.engagement}
 CHANNEL: {spec.channel}
 SCENARIO: {spec.scenario}
@@ -372,15 +474,13 @@ Then immediately follow with the conversation in the exact format:
 
 Remember: NO blank lines between messages, Em must be capitalized as <Em>, usernames should be descriptive."""
 
-        return base_prompt
+        return system_content, user_content
 
-    def generate_conversation(
-        self, spec: ConversationSpec
-    ) -> Tuple[Optional[str], int, int, int]:
-        """Generate a single conversation using Claude API
+    def generate_conversation(self, spec: ConversationSpec) -> ConversationResult:
+        """Generate a single conversation using Claude API with prompt caching
 
         Returns:
-            Tuple of (conversation_text, total_tokens, input_tokens, output_tokens)
+            ConversationResult with conversation text and metrics
         """
         if self.test_mode:
             print(f"\n=== TEST MODE - Conversation Spec ===")
@@ -392,24 +492,43 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
             print(f"Expected Em participation: {spec.em_participation_pct}%")
             print(f"=====================================\n")
 
-        prompt = self.generate_conversation_prompt(spec)
+        system_content, user_content = self.generate_conversation_prompt(spec)
 
         if self.test_mode:
-            print("Generated prompt:")
+            print("Generated prompt (system + user):")
             print("=" * 50)
-            print(prompt)
+            print("SYSTEM (cacheable):")
+            print(system_content)
+            print("\nUSER (variable):")
+            print(user_content)
             print("=" * 50)
 
             response = input("\nPress Enter to send to Claude, or 'skip' to skip: ")
             if response.lower().strip() == "skip":
-                return None, 0, 0, 0
+                return ConversationResult(
+                    conversation=None,
+                    total_tokens=0,
+                    input_tokens=0,
+                    output_tokens=0,
+                    actual_cost=0.0,
+                    cache_creation_tokens=0,
+                    cache_read_tokens=0,
+                )
 
         try:
+            # Use prompt caching with system prompt for static content
             response = self.client.messages.create(
                 model=MODEL,
                 max_tokens=4000,
                 temperature=0.8,
-                messages=[{"role": "user", "content": prompt}],
+                system=[
+                    {
+                        "type": "text",
+                        "text": system_content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=[{"role": "user", "content": user_content}],
             )
 
             # Handle the response content - must be text for training data
@@ -434,14 +553,33 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
             if not conversation.strip():
                 raise ValueError("Empty conversation text received")
 
-            # Calculate costs properly
+            # Get actual token counts and cache metrics from response
             input_tokens = response.usage.input_tokens
             output_tokens = response.usage.output_tokens
             total_tokens = input_tokens + output_tokens
 
-            # Calculate actual cost
-            actual_cost = (input_tokens * INPUT_TOKEN_COST) + (
-                output_tokens * OUTPUT_TOKEN_COST
+            # Get cache metrics from response
+            cache_creation_tokens = getattr(
+                response.usage, "cache_creation_input_tokens", 0
+            )
+            cache_read_tokens = getattr(response.usage, "cache_read_input_tokens", 0)
+
+            # Calculate actual cost using real cache metrics
+            actual_cost = (
+                (input_tokens * INPUT_TOKEN_COST)
+                + (output_tokens * OUTPUT_TOKEN_COST)
+                + (cache_creation_tokens * CACHE_WRITE_COST)
+                + (cache_read_tokens * CACHE_READ_COST)
+            )
+
+            result = ConversationResult(
+                conversation=conversation,
+                total_tokens=total_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                actual_cost=actual_cost,
+                cache_creation_tokens=cache_creation_tokens,
+                cache_read_tokens=cache_read_tokens,
             )
 
             if self.test_mode:
@@ -450,18 +588,42 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
                 print(f"\n=== STATS ===")
                 print(f"Input tokens: {input_tokens}")
                 print(f"Output tokens: {output_tokens}")
+                print(f"Cache creation tokens: {cache_creation_tokens}")
+                print(f"Cache read tokens: {cache_read_tokens}")
                 print(f"Total tokens: {total_tokens}")
                 print(f"Actual cost: ${actual_cost:.6f}")
+                print(f"Cache hit rate: {result.cache_hit_rate:.1f}%")
+
+                if cache_creation_tokens > 0:
+                    print(f"  → Cache WRITE (first time seeing this content)")
+                if cache_read_tokens > 0:
+                    print(f"  → Cache READ (reusing cached content)")
 
                 keep = input("\nKeep this conversation? (y/n): ")
                 if keep.lower().strip() != "y":
-                    return None, 0, 0, 0
+                    return ConversationResult(
+                        conversation=None,
+                        total_tokens=0,
+                        input_tokens=0,
+                        output_tokens=0,
+                        actual_cost=0.0,
+                        cache_creation_tokens=0,
+                        cache_read_tokens=0,
+                    )
 
-            return conversation, total_tokens, input_tokens, output_tokens
+            return result
 
         except Exception as e:
             print(f"Error generating conversation: {e}")
-            return None, 0, 0, 0
+            return ConversationResult(
+                conversation=None,
+                total_tokens=0,
+                input_tokens=0,
+                output_tokens=0,
+                actual_cost=0.0,
+                cache_creation_tokens=0,
+                cache_read_tokens=0,
+            )
 
     def validate_conversation(
         self, conversation: str, spec: ConversationSpec
@@ -540,9 +702,16 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
         return len(issues) == 0, issues
 
     def save_conversation(
-        self, conversation: str, spec: ConversationSpec, conv_id: int
+        self, result: ConversationResult, spec: ConversationSpec, conv_id: int
     ):
-        """Save a conversation to file"""
+        """Save a conversation to file and update progress with actual metrics"""
+        if not result.success:
+            return
+
+        # At this point we know conversation is not None due to success check
+        conversation = result.conversation
+        assert conversation is not None
+
         filename = f"conversation_{conv_id:04d}_{spec.engagement.lower()}_{spec.channel.replace('#', '')}_{spec.category}.txt"
         filepath = self.output_dir / filename
 
@@ -552,7 +721,7 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
         # Add to our conversation list
         self.conversations.append(conversation)
 
-        # Update progress
+        # Update progress with actual metrics
         self.progress.conversations_completed += 1
         self.progress.current_size_mb = len(
             "\n".join(self.conversations).encode("utf-8")
@@ -563,20 +732,15 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
         else:
             self.progress.core_scenarios_completed[spec.category] = 1
 
-        # Update total tokens
-        total_tokens, input_tokens, output_tokens = conversation.count("\n") + 1, 0, 0
-        for line in conversation.split("\n"):
-            if line.startswith("<"):
-                input_tokens += 1
-            else:
-                output_tokens += 1
-        self.progress.total_tokens += total_tokens
-        self.progress.total_input_tokens += input_tokens
-        self.progress.total_output_tokens += output_tokens
-        self.progress.cost_estimate = (
-            self.progress.total_input_tokens * INPUT_TOKEN_COST
-            + self.progress.total_output_tokens * OUTPUT_TOKEN_COST
-        )
+        # Update with actual token counts and costs
+        self.progress.total_tokens += result.total_tokens
+        self.progress.total_input_tokens += result.input_tokens
+        self.progress.total_output_tokens += result.output_tokens
+        self.progress.total_cache_creation_tokens += result.cache_creation_tokens
+        self.progress.total_cache_read_tokens += result.cache_read_tokens
+
+        # Use actual cost instead of estimate
+        self.progress.cost_estimate += result.actual_cost
 
     def print_status(self):
         """Print current generation status"""
@@ -587,7 +751,23 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
             f"Current dataset size: {self.progress.current_size_mb:.1f}MB / {TARGET_SIZE_MB}MB"
         )
         print(f"Total tokens used: {self.progress.total_tokens:,}")
-        print(f"Estimated cost: ${self.progress.cost_estimate:.2f}")
+        print(f"  Input tokens: {self.progress.total_input_tokens:,}")
+        print(f"  Output tokens: {self.progress.total_output_tokens:,}")
+        print(f"  Cache creation tokens: {self.progress.total_cache_creation_tokens:,}")
+        print(f"  Cache read tokens: {self.progress.total_cache_read_tokens:,}")
+
+        # Calculate cache hit rate
+        total_cache_tokens = (
+            self.progress.total_cache_creation_tokens
+            + self.progress.total_cache_read_tokens
+        )
+        if total_cache_tokens > 0:
+            cache_hit_rate = (
+                self.progress.total_cache_read_tokens / total_cache_tokens
+            ) * 100
+            print(f"Cache hit rate: {cache_hit_rate:.1f}%")
+
+        print(f"Actual cost: ${self.progress.cost_estimate:.4f}")
 
         print(f"\nCore scenario progress:")
         scenarios = self.get_core_behavioral_scenarios()
@@ -623,34 +803,25 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
         # Generate with full visibility
         old_test_mode = self.test_mode
         self.test_mode = True
-        conversation, total_tokens, input_tokens, output_tokens = (
-            self.generate_conversation(spec)
-        )
+        result = self.generate_conversation(spec)
         self.test_mode = old_test_mode
 
-        if conversation:
-            valid, issues = self.validate_conversation(conversation, spec)
+        if result.conversation:
+            valid, issues = self.validate_conversation(result.conversation, spec)
             print(f"\nValidation: {'✓ PASSED' if valid else '✗ FAILED'}")
             if not valid:
                 print(f"Issues: {', '.join(issues)}")
 
             # If conversation is valid and user kept it, save it
-            if valid and conversation:
+            if valid and result.conversation:
                 save_choice = input("\nSave this conversation to dataset? (y/n): ")
                 if save_choice.lower().strip() == "y":
                     conv_id = self.progress.conversations_completed
-                    self.save_conversation(conversation, spec, conv_id)
-                    self.progress.total_tokens += total_tokens
-                    self.progress.total_input_tokens += input_tokens
-                    self.progress.total_output_tokens += output_tokens
-                    self.progress.cost_estimate = (
-                        self.progress.total_input_tokens * INPUT_TOKEN_COST
-                        + self.progress.total_output_tokens * OUTPUT_TOKEN_COST
-                    )
+                    self.save_conversation(result, spec, conv_id)
                     self.save_progress()
                     print(f"✅ Conversation saved as conversation_{conv_id:04d}")
 
-        return conversation is not None
+        return result.conversation is not None
 
     def generate_batch(self, count: int = 5):
         """Generate a small batch of conversations"""
@@ -674,23 +845,16 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
                 spec = self.create_conversation_spec(
                     scenario_type=scenario, topic=topic
                 )
-                conversation, total_tokens, input_tokens, output_tokens = (
-                    self.generate_conversation(spec)
-                )
+                result = self.generate_conversation(spec)
 
-                if conversation:
-                    valid, issues = self.validate_conversation(conversation, spec)
+                if result.conversation:
+                    valid, issues = self.validate_conversation(
+                        result.conversation, spec
+                    )
 
                     # Save conversation even with minor issues, just log warnings
                     conv_id = self.progress.conversations_completed
-                    self.save_conversation(conversation, spec, conv_id)
-                    self.progress.total_tokens += total_tokens
-                    self.progress.total_input_tokens += input_tokens
-                    self.progress.total_output_tokens += output_tokens
-                    self.progress.cost_estimate = (
-                        self.progress.total_input_tokens * INPUT_TOKEN_COST
-                        + self.progress.total_output_tokens * OUTPUT_TOKEN_COST
-                    )
+                    self.save_conversation(result, spec, conv_id)
                     self.save_progress()
 
                     if valid:
@@ -712,25 +876,17 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
             print(f"Generating {natural_count} natural conversations...")
             for i in range(natural_count):
                 spec = self.create_conversation_spec()
-                conversation, total_tokens, input_tokens, output_tokens = (
-                    self.generate_conversation(spec)
-                )
+                result = self.generate_conversation(spec)
 
-                if conversation:
-                    valid, issues = self.validate_conversation(conversation, spec)
+                if result.conversation:
+                    valid, issues = self.validate_conversation(
+                        result.conversation, spec
+                    )
 
                     # Save conversation even with minor issues, just log warnings
                     conv_id = self.progress.conversations_completed
-                    self.save_conversation(conversation, spec, conv_id)
-                    self.progress.total_tokens += total_tokens
-                    self.progress.total_input_tokens += input_tokens
-                    self.progress.total_output_tokens += output_tokens
-                    self.progress.cost_estimate = (
-                        self.progress.total_input_tokens * INPUT_TOKEN_COST
-                        + self.progress.total_output_tokens * OUTPUT_TOKEN_COST
-                    )
+                    self.save_conversation(result, spec, conv_id)
                     self.save_progress()
-                    generated_this_session += 1
 
                     if not self.test_mode:
                         if valid:
@@ -786,23 +942,16 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
                     spec = self.create_conversation_spec(
                         scenario_type=scenario_type, topic=topic
                     )
-                    conversation, total_tokens, input_tokens, output_tokens = (
-                        self.generate_conversation(spec)
-                    )
+                    result = self.generate_conversation(spec)
 
-                    if conversation:
-                        valid, issues = self.validate_conversation(conversation, spec)
+                    if result.conversation:
+                        valid, issues = self.validate_conversation(
+                            result.conversation, spec
+                        )
 
                         # Save conversation even with minor issues, just log warnings
                         conv_id = self.progress.conversations_completed
-                        self.save_conversation(conversation, spec, conv_id)
-                        self.progress.total_tokens += total_tokens
-                        self.progress.total_input_tokens += input_tokens
-                        self.progress.total_output_tokens += output_tokens
-                        self.progress.cost_estimate = (
-                            self.progress.total_input_tokens * INPUT_TOKEN_COST
-                            + self.progress.total_output_tokens * OUTPUT_TOKEN_COST
-                        )
+                        self.save_conversation(result, spec, conv_id)
                         self.save_progress()
 
                         completed = self.progress.core_scenarios_completed.get(
@@ -852,23 +1001,14 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
                 generated_this_session = 0
 
             spec = self.create_conversation_spec()
-            conversation, total_tokens, input_tokens, output_tokens = (
-                self.generate_conversation(spec)
-            )
+            result = self.generate_conversation(spec)
 
-            if conversation:
-                valid, issues = self.validate_conversation(conversation, spec)
+            if result.conversation:
+                valid, issues = self.validate_conversation(result.conversation, spec)
 
                 # Save conversation even with minor issues, just log warnings
                 conv_id = self.progress.conversations_completed
-                self.save_conversation(conversation, spec, conv_id)
-                self.progress.total_tokens += total_tokens
-                self.progress.total_input_tokens += input_tokens
-                self.progress.total_output_tokens += output_tokens
-                self.progress.cost_estimate = (
-                    self.progress.total_input_tokens * INPUT_TOKEN_COST
-                    + self.progress.total_output_tokens * OUTPUT_TOKEN_COST
-                )
+                self.save_conversation(result, spec, conv_id)
                 self.save_progress()
                 generated_this_session += 1
 
@@ -935,7 +1075,27 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
             "conversations_completed": self.progress.conversations_completed,
             "conversations_rejected": self.progress.conversations_rejected,
             "total_tokens": self.progress.total_tokens,
-            "estimated_cost": self.progress.cost_estimate,
+            "total_input_tokens": self.progress.total_input_tokens,
+            "total_output_tokens": self.progress.total_output_tokens,
+            "total_cache_creation_tokens": self.progress.total_cache_creation_tokens,
+            "total_cache_read_tokens": self.progress.total_cache_read_tokens,
+            "cache_hit_rate": (
+                (
+                    self.progress.total_cache_read_tokens
+                    / (
+                        self.progress.total_cache_creation_tokens
+                        + self.progress.total_cache_read_tokens
+                    )
+                )
+                * 100
+                if (
+                    self.progress.total_cache_creation_tokens
+                    + self.progress.total_cache_read_tokens
+                )
+                > 0
+                else 0.0
+            ),
+            "actual_cost": self.progress.cost_estimate,
             "dataset_size_mb": self.progress.current_size_mb,
             "avg_conversation_length": sum(
                 len(conv.split("\n")) for conv in self.conversations
@@ -952,7 +1112,7 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
         print(f"Training file: {jsonl_path}")
         print(f"Conversations: {stats['conversations_completed']}")
         print(f"Dataset size: {stats['dataset_size_mb']:.1f}MB")
-        print(f"Total cost: ${stats['estimated_cost']:.2f}")
+        print(f"Total cost: ${stats['actual_cost']:.2f}")
 
     def generate_full_dataset(self):
         """Generate the complete training dataset"""
@@ -1005,37 +1165,11 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
 
         # Analyze the prompt structure to identify cacheable content
         sample_spec = self.create_conversation_spec()
-        sample_prompt = self.generate_conversation_prompt(sample_spec)
+        system_content, user_content = self.generate_conversation_prompt(sample_spec)
 
-        # Split prompt into cacheable and variable parts
-        lines = sample_prompt.split("\n")
-
-        # Identify the static/cacheable portion (everything before the variable parts)
-        cacheable_lines: List[str] = []
-
-        for line in lines:
-            # Variable parts start when we hit the spec-specific content
-            if any(
-                marker in line
-                for marker in [
-                    "ENGAGEMENT:",
-                    "CHANNEL:",
-                    "SCENARIO:",
-                    "LENGTH:",
-                    "EM PARTICIPATION:",
-                    "Channel Context:",
-                    "Topic Guidance:",
-                ]
-            ):
-                break
-            cacheable_lines.append(line)
-
-        # Estimate token counts (rough approximation: 1 token ≈ 4 characters)
-        cacheable_text = "\n".join(cacheable_lines)
-        variable_text = sample_prompt[len(cacheable_text) :]
-
-        cacheable_tokens = len(cacheable_text) // 4
-        variable_tokens = len(variable_text) // 4
+        # Calculate token counts (rough approximation: 1 token ≈ 4 characters)
+        cacheable_tokens = len(system_content) // 4
+        variable_tokens = len(user_content) // 4
         total_prompt_tokens = cacheable_tokens + variable_tokens
 
         # Calculate current costs vs caching costs
@@ -1092,9 +1226,9 @@ Remember: NO blank lines between messages, Em must be capitalized as <Em>, usern
             "total_savings": total_savings,
             "savings_percentage": savings_percentage,
             "cacheable_content_preview": (
-                cacheable_text[:200] + "..."
-                if len(cacheable_text) > 200
-                else cacheable_text
+                system_content[:200] + "..."
+                if len(system_content) > 200
+                else system_content
             ),
         }
 
