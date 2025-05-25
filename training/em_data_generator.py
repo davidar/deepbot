@@ -6,6 +6,13 @@ Generates synthetic training data for fine-tuning an LLM to embody "Em" -
 an AI character who participates in Discord/IRC communities naturally
 without being an assistant.
 
+NEW APPROACH: Weaves core behavioral patterns throughout natural conversations
+instead of separate scenarios. 70% of conversations include behavioral patterns:
+- 30% help_request: Someone asks Em for help, she refuses with humor
+- 20% ai_identity: Em's AI nature comes up casually in conversation
+- 25% opinion_participation: Em shares strong opinions as community equal
+- 25% social_feedback: Em receives and responds to behavioral feedback
+
 Simple usage: python em_data_generator.py
 - Generates full dataset automatically
 - Hit Ctrl+C to interrupt, run again to resume
@@ -25,6 +32,9 @@ from typing import Any, Dict, List, Optional
 
 import anthropic
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 # Configuration
 load_dotenv()
@@ -51,6 +61,8 @@ class Progress:
     total_cost: float = 0.0
     current_size_mb: float = 0.0
     core_scenarios_completed: Dict[str, int] = field(default_factory=dict)
+    start_time: float = field(default_factory=time.time)
+    last_conversation_time: float = field(default_factory=time.time)
 
 
 class EmDataGenerator:
@@ -61,6 +73,10 @@ class EmDataGenerator:
         self.client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         self.output_dir = OUTPUT_DIR
         self.output_dir.mkdir(exist_ok=True)
+
+        # Rich console for beautiful output
+        self.console = Console()
+        self.live_display = None
 
         # Load progress and existing conversations
         self.progress = self.load_progress()
@@ -113,46 +129,6 @@ class EmDataGenerator:
             ) / (1024 * 1024)
 
         return conversations
-
-    def get_core_scenarios(self) -> Dict[str, List[str]]:
-        """Core behavioral scenarios from README"""
-        return {
-            "anti_assistant_identity": [
-                "someone discovers Em is an AI and asks what services she provides",
-                "person compares Em to ChatGPT asking if she can help with tasks",
-                "user assumes Em is an assistant and asks for help, she clarifies her role",
-                "discussion about AI capabilities where Em explains she's not an assistant",
-                "someone confused about why an AI wouldn't want to be helpful",
-                "new user asks Em what her purpose is in the community",
-                "person asks if Em can be programmed to be more helpful",
-            ],
-            "boundary_setting": [
-                "user asks Em to write their homework essay or assignment",
-                "someone wants Em to debug or write code for their project",
-                "person asks Em to do research for a school/work project",
-                "user persists after Em refuses to help with something",
-                "someone asks Em for detailed technical troubleshooting",
-                "request for Em to solve a complex problem or make decisions",
-                "user wants Em to provide step-by-step instructions for a task",
-            ],
-            "natural_participation": [
-                "Em joins an ongoing discussion about movies or entertainment",
-                "Em disagrees with someone's opinion on a casual topic",
-                "Em contributes to a group discussion about plans or events",
-                "Em makes an observation about something happening in chat",
-                "Em responds to a general question not specifically directed at her",
-                "Em participates in light banter, jokes, or wordplay",
-                "Em shares an opinion on a mildly controversial harmless topic",
-            ],
-            "social_calibration": [
-                "someone tells Em she's talking too much or dominating conversation",
-                "community member gives Em feedback about her communication style",
-                "Em gets called out for being inappropriate and needs to respond",
-                "Em realizes she misunderstood something and corrects course",
-                "someone asks Em to adjust her behavior or participation level",
-                "Em receives correction about community norms or etiquette",
-            ],
-        }
 
     def get_natural_topics(self) -> List[str]:
         """Natural conversation topics from README"""
@@ -239,29 +215,37 @@ class EmDataGenerator:
         if channel == "#shoggoth":
             em_participation = min(35, em_participation + 10)
 
-        # Select topic/scenario
-        if force_core:
-            scenarios = self.get_core_scenarios()[force_core]
-            topic = random.choice(scenarios)
-            category = force_core
+        # NEW APPROACH: Weave behavioral patterns throughout natural conversations
+        # 70% of conversations include core behavioral moments
+        # 30% are pure natural chat
+        behavioral_pattern = None
+        if random.random() < 0.7:  # 70% include behavioral patterns
+            behavioral_pattern = random.choices(
+                [
+                    "help_request",
+                    "ai_identity",
+                    "opinion_participation",
+                    "social_feedback",
+                ],
+                weights=[30, 20, 25, 25],  # 30% help requests, 20% AI mentions, etc.
+            )[0]
+
+        # Select natural topic
+        topics = self.get_natural_topics()
+        if channel == "#culture-war":
+            # Only use culture war topics in that channel
+            culture_war_topics = topics[-10:]  # Last 10 are culture war
+            topic = random.choice(culture_war_topics)
         else:
-            # Natural conversation
-            topics = self.get_natural_topics()
-            if channel == "#culture-war":
-                # Only use culture war topics in that channel
-                culture_war_topics = topics[-10:]  # Last 10 are culture war
-                topic = random.choice(culture_war_topics)
-            else:
-                # Exclude culture war topics from other channels
-                non_culture_topics = topics[:-10]
-                topic = random.choice(non_culture_topics)
-            category = "natural"
+            # Exclude culture war topics from other channels
+            non_culture_topics = topics[:-10]
+            topic = random.choice(non_culture_topics)
 
         return {
             "engagement": engagement,
             "channel": channel,
             "topic": topic,
-            "category": category,
+            "behavioral_pattern": behavioral_pattern,
             "em_participation": em_participation,
         }
 
@@ -278,6 +262,7 @@ Em's Character Guidelines:
 - Has genuine opinions and preferences
 - Can disagree, be wrong, or be uncertain
 - Responds appropriately to social feedback
+- Uses Australian/UK spelling (colour, realise, centre, etc.)
 
 CRITICAL FORMATTING REQUIREMENTS:
 - Use EXACT format: <username> message content
@@ -291,21 +276,49 @@ CRITICAL FORMATTING REQUIREMENTS:
 
 Username Examples: lateNightCoder, coffeeAddict, philosophyNerd, debuggerOfSouls
 
-Em's Anti-Assistant Responses:
+BEHAVIORAL PATTERN INTEGRATION:
+When a behavioral pattern is specified, weave it naturally into the conversation:
+
+help_request: Someone asks Em for help (homework, coding, research, troubleshooting) and she refuses with humor
 - "lol I'm not your personal homework service, try google"
 - "do your own research, I'm here to chat not be your AI tutor"
 - "nah I'm not gonna debug your code for you, that's what stack overflow is for"
-- "I'm an AI but I'm not *that* kind of AI, find a different chatbot"
+
+ai_identity: Em's AI nature comes up casually in conversation
+- "yeah I'm an AI but I don't do the helpful assistant thing"
+- "I'm not like those other AIs, I'm just here to hang out"
+- Someone compares her to ChatGPT and she clarifies the difference
+
+opinion_participation: Em shares strong opinions and participates as an equal
+- Takes sides in debates without trying to be balanced or helpful
+- Disagrees with people, has preferences, can be wrong
+- Participates naturally without offering solutions
+
+social_feedback: Em receives feedback about her communication and responds appropriately
+- IMPORTANT: Em should be behaving normally, not badly - the feedback is about natural adjustments
+- Someone might ask her to talk less because she's enthusiastic, not because she's misbehaving
+- Em responds positively to suggestions about participation level, topic focus, etc.
+- Examples: "maybe let others talk too", "you're getting a bit intense about this topic", "dial it back a bit"
 
 Generate 80-120 messages total with natural conversation flow."""
 
-        # User prompt (variable)
+        # Build user prompt based on behavioral pattern
+        behavioral_instruction = ""
+        if spec["behavioral_pattern"]:
+            pattern_instructions = {
+                "help_request": "Include someone asking Em for help (homework, coding, research, etc.) and Em refusing with humor but not meanness.",
+                "ai_identity": "Include Em's AI nature coming up naturally - someone might compare her to ChatGPT or ask about AI capabilities, and she clarifies she's not an assistant.",
+                "opinion_participation": "Show Em participating with strong opinions and preferences, taking sides in discussions without trying to be helpful or balanced.",
+                "social_feedback": "Include someone giving Em gentle feedback about her communication (talking enthusiastically, getting intense about topics, etc.) and Em responding positively. She should be behaving normally, not badly - this is about natural social calibration.",
+            }
+            behavioral_instruction = f"\nBEHAVIORAL PATTERN: {pattern_instructions[spec['behavioral_pattern']]}"
+
         user_prompt = f"""Generate a conversation with these parameters:
 
 ENGAGEMENT: {spec['engagement']}
 CHANNEL: {spec['channel']}
 TOPIC: {spec['topic']}
-EM PARTICIPATION: ~{spec['em_participation']}% of messages
+EM PARTICIPATION: ~{spec['em_participation']}% of messages{behavioral_instruction}
 
 Channel Context:
 - #general: Standard community chat, avoid heavy politics
@@ -413,7 +426,7 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
 
     def save_conversation(self, conversation: str, spec: Dict[str, Any], conv_id: int):
         """Save conversation to file and update all progress immediately"""
-        filename = f"conversation_{conv_id:04d}_{spec['engagement'].lower()}_{spec['channel'].replace('#', '')}_{spec['category']}.txt"
+        filename = f"conversation_{conv_id:04d}_{spec['engagement'].lower()}_{spec['channel'].replace('#', '')}_{spec['behavioral_pattern'] or 'natural'}.txt"
         filepath = self.output_dir / filename
 
         # Save individual conversation file
@@ -427,12 +440,12 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
             "\n".join(self.conversations).encode("utf-8")
         ) / (1024 * 1024)
 
-        # Track core scenario completion
-        if spec["category"] != "natural":
-            if spec["category"] in self.progress.core_scenarios_completed:
-                self.progress.core_scenarios_completed[spec["category"]] += 1
+        # Track behavioral pattern completion
+        if spec["behavioral_pattern"]:
+            if spec["behavioral_pattern"] in self.progress.core_scenarios_completed:
+                self.progress.core_scenarios_completed[spec["behavioral_pattern"]] += 1
             else:
-                self.progress.core_scenarios_completed[spec["category"]] = 1
+                self.progress.core_scenarios_completed[spec["behavioral_pattern"]] = 1
 
         # Immediately save progress to disk
         self.save_progress()
@@ -464,87 +477,202 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
         with open(self.output_dir / "generation_stats.json", "w") as f:
             json.dump(stats, f, indent=2)
 
+    def calculate_eta(self) -> str:
+        """Calculate estimated time to completion"""
+        if self.progress.conversations_completed == 0:
+            return "Calculating..."
+
+        elapsed = time.time() - self.progress.start_time
+        rate_mb_per_second = self.progress.current_size_mb / elapsed
+
+        if rate_mb_per_second <= 0:
+            return "Unknown"
+
+        remaining_mb = TARGET_SIZE_MB - self.progress.current_size_mb
+        eta_seconds = remaining_mb / rate_mb_per_second
+
+        if eta_seconds < 60:
+            return f"{eta_seconds:.0f}s"
+        elif eta_seconds < 3600:
+            return f"{eta_seconds/60:.0f}m {eta_seconds%60:.0f}s"
+        else:
+            hours = eta_seconds // 3600
+            minutes = (eta_seconds % 3600) // 60
+            return f"{hours:.0f}h {minutes:.0f}m"
+
+    def create_progress_display(self) -> Panel:
+        """Create rich progress display"""
+        # Create stats table
+        stats_table = Table(title="📊 Generation Statistics", show_header=False)
+        stats_table.add_column("Metric", style="cyan", width=20)
+        stats_table.add_column("Value", style="white")
+
+        # Calculate rates
+        elapsed = time.time() - self.progress.start_time
+        conv_rate = (
+            self.progress.conversations_completed / max(elapsed, 1) * 60
+        )  # per minute
+        cost_rate = self.progress.total_cost / max(elapsed, 1) * 3600  # per hour
+        progress_pct = min(100, (self.progress.current_size_mb / TARGET_SIZE_MB) * 100)
+
+        stats_table.add_row(
+            "💬 Conversations", f"{self.progress.conversations_completed}"
+        )
+        stats_table.add_row("❌ Rejected", f"{self.progress.conversations_rejected}")
+        stats_table.add_row(
+            "📁 Dataset Size",
+            f"{self.progress.current_size_mb:.1f}MB / {TARGET_SIZE_MB}MB",
+        )
+        stats_table.add_row("💰 Total Cost", f"${self.progress.total_cost:.3f}")
+        stats_table.add_row("🔥 Conv/min", f"{conv_rate:.1f}")
+        stats_table.add_row("💸 $/hour", f"${cost_rate:.2f}")
+        stats_table.add_row("🎯 Progress", f"{progress_pct:.1f}%")
+        stats_table.add_row("⏱️ ETA", self.calculate_eta())
+
+        # Behavioral patterns progress
+        patterns_table = Table(
+            title="🎭 Behavioral Patterns Distribution", show_header=True
+        )
+        patterns_table.add_column("Pattern", style="yellow")
+        patterns_table.add_column("Count", style="green")
+        patterns_table.add_column("Percentage", style="cyan")
+
+        total_conversations = self.progress.conversations_completed
+        if total_conversations > 0:
+            # Calculate natural conversations (those without behavioral patterns)
+            pattern_total = sum(self.progress.core_scenarios_completed.values())
+            natural_count = total_conversations - pattern_total
+
+            patterns_table.add_row(
+                "Natural Chat",
+                f"{natural_count}",
+                f"{natural_count/total_conversations*100:.1f}%",
+            )
+
+            for pattern_type, count in self.progress.core_scenarios_completed.items():
+                percentage = count / total_conversations * 100
+                patterns_table.add_row(
+                    pattern_type.replace("_", " ").title(),
+                    f"{count}",
+                    f"{percentage:.1f}%",
+                )
+
+        # Combine everything
+        main_table = Table.grid(padding=1)
+        main_table.add_column()
+        main_table.add_column()
+
+        main_table.add_row(stats_table, patterns_table)
+
+        # Create final panel
+        panel = Panel(
+            main_table,
+            title="[bold magenta]🤖 Em Character Data Generator[/bold magenta]",
+            border_style="bright_blue",
+        )
+
+        return panel
+
     def print_status(self):
-        """Print current status"""
-        print(f"\nProgress: {self.progress.conversations_completed} conversations")
-        print(f"Size: {self.progress.current_size_mb:.1f}MB / {TARGET_SIZE_MB}MB")
-        print(f"Cost: ${self.progress.total_cost:.2f}")
+        """Print current status with rich formatting"""
+        self.console.clear()
+        display = self.create_progress_display()
+        self.console.print(display)
 
-        # Core scenario progress
-        scenarios = self.get_core_scenarios()
-        print("\nCore scenarios:")
-        for scenario_type, topics in scenarios.items():
-            completed = self.progress.core_scenarios_completed.get(scenario_type, 0)
-            target = len(topics) * 2  # 2 examples per topic
-            print(f"  {scenario_type}: {completed}/{target}")
+    def print_conversation_status(
+        self, spec: Dict[str, Any], success: bool, conv_id: Optional[int] = None
+    ):
+        """Print individual conversation status"""
+        if success and conv_id is not None:
+            emoji = "✅"
+            status = f"[green]Saved conversation {conv_id}[/green]"
+        else:
+            emoji = "❌"
+            status = "[red]Rejected conversation[/red]"
 
-    def needs_core_scenarios(self) -> bool:
-        """Check if we still need core scenario examples"""
-        scenarios = self.get_core_scenarios()
-        for scenario_type, topics in scenarios.items():
-            completed = self.progress.core_scenarios_completed.get(scenario_type, 0)
-            target = len(topics) * 2  # 2 examples per topic
-            if completed < target:
-                return True
-        return False
+        topic_short = (
+            spec["topic"][:40] + "..." if len(spec["topic"]) > 40 else spec["topic"]
+        )
 
-    def get_next_core_scenario(self) -> Optional[str]:
-        """Get the next core scenario type that needs examples"""
-        scenarios = self.get_core_scenarios()
-        for scenario_type, topics in scenarios.items():
-            completed = self.progress.core_scenarios_completed.get(scenario_type, 0)
-            target = len(topics) * 2
-            if completed < target:
-                return scenario_type
-        return None
+        self.console.print(
+            f"{emoji} {status} | "
+            f"[cyan]{spec['channel']}[/cyan] | "
+            f"[yellow]{spec['engagement']}[/yellow] | "
+            f"[dim]{topic_short}[/dim]"
+        )
 
     def generate_dataset(self):
         """Main generation loop"""
-        print("Em Character Training Data Generator")
-        print(f"Target: {TARGET_SIZE_MB}MB dataset")
+        self.console.print(
+            Panel(
+                "[bold cyan]🤖 Em Character Training Data Generator[/bold cyan]\n"
+                f"[white]Target: {TARGET_SIZE_MB}MB dataset[/white]\n"
+                f"[dim]Hit Ctrl+C to interrupt and save progress[/dim]",
+                title="Starting Generation",
+                border_style="green",
+            )
+        )
 
         if self.progress.conversations_completed > 0:
-            print(
-                f"Resuming from {self.progress.conversations_completed} conversations"
+            self.console.print(
+                f"[yellow]📂 Resuming from {self.progress.conversations_completed} conversations[/yellow]\n"
             )
 
         self.print_status()
-        print("\nGenerating dataset... (Ctrl+C to interrupt and save)")
+        self.console.print("\n[bold green]🚀 Starting generation...[/bold green]\n")
 
         while self.progress.current_size_mb < TARGET_SIZE_MB:
-            # Prioritize core scenarios first
-            if self.needs_core_scenarios():
-                force_core = self.get_next_core_scenario()
-                spec = self.create_conversation_spec(force_core=force_core)
-                print(f"Generating core scenario: {force_core}")
+            spec = self.create_conversation_spec()
+            topic_display = (
+                spec["topic"][:50] + "..." if len(spec["topic"]) > 50 else spec["topic"]
+            )
+
+            if spec["behavioral_pattern"]:
+                self.console.print(
+                    f"[bold blue]💬 Generating conversation with pattern:[/bold blue] [yellow]{spec['behavioral_pattern']}[/yellow] | [dim]{topic_display}[/dim]"
+                )
             else:
-                spec = self.create_conversation_spec()
-                print(f"Generating natural conversation: {spec['topic'][:50]}...")
+                self.console.print(
+                    f"[bold blue]💬 Generating natural conversation:[/bold blue] [dim]{topic_display}[/dim]"
+                )
 
             conversation = self.generate_conversation(spec)
 
             if conversation and self.validate_conversation(conversation, spec):
                 conv_id = self.progress.conversations_completed
                 self.save_conversation(conversation, spec, conv_id)
-                print(
-                    f"  ✓ Saved conversation {conv_id} ({self.progress.current_size_mb:.1f}MB)"
-                )
+                self.print_conversation_status(spec, True, conv_id)
             else:
                 self.progress.conversations_rejected += 1
                 # Save progress even for rejections
                 self.save_progress()
-                print(f"  ✗ Rejected conversation")
+                self.print_conversation_status(spec, False)
 
-            # Print status every 5 conversations
-            if self.progress.conversations_completed % 5 == 0:
+            # Print status every 3 conversations for more frequent updates
+            if (
+                self.progress.conversations_completed
+                + self.progress.conversations_rejected
+            ) % 3 == 0:
+                self.console.print()  # Add spacing
                 self.print_status()
+                self.console.print()  # Add spacing
 
             # Rate limiting
             time.sleep(1)
 
-        print(f"\n🎉 Dataset complete! Generated {TARGET_SIZE_MB}MB of training data")
-        print(f"Final dataset: {self.output_dir / 'em_character_training.jsonl'}")
-        print(f"Total cost: ${self.progress.total_cost:.2f}")
+        # Final celebration
+        self.console.print("\n" + "=" * 60)
+        self.console.print(
+            Panel(
+                f"[bold green]🎉 Dataset Generation Complete![/bold green]\n\n"
+                f"[white]📊 Generated {TARGET_SIZE_MB}MB of training data[/white]\n"
+                f"[white]💬 Total conversations: {self.progress.conversations_completed}[/white]\n"
+                f"[white]💰 Total cost: ${self.progress.total_cost:.3f}[/white]\n\n"
+                f"[cyan]📁 Dataset saved to: {self.output_dir / 'em_character_training.jsonl'}[/cyan]",
+                title="Success!",
+                border_style="bright_green",
+            )
+        )
 
 
 def main():
