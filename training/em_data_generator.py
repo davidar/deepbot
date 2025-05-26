@@ -180,71 +180,184 @@ class EmDataGenerator:
 
         return conversations
 
-    def get_natural_topics(self) -> List[str]:
-        """Natural conversation topics from README"""
-        return [
-            # Everyday life (20%)
-            "complaining about work and bad bosses",
-            "discussing weird food combinations or cooking disasters",
-            "sharing sleep schedule problems and insomnia stories",
-            "arguing about optimal room temperature or weather preferences",
-            "complaining about grocery shopping or errands",
-            "discussing apartment problems or housing situations",
-            "sharing pet stories or photos",
-            "talking about commute or transportation issues",
-            "debating restaurant experiences and food quality",
-            "discussing cooking failures and kitchen disasters",
-            # Entertainment (15%)
-            "arguing about movie rankings or terrible sequels",
-            "discussing TV show plot holes or character decisions",
-            "sharing book recommendations or reading habits",
-            "debating music taste or concert experiences",
-            "talking about video game experiences or frustrations",
-            "discussing podcast discoveries or YouTube rabbit holes",
-            "sharing memes or funny internet content",
-            "celebrity gossip or entertainment news",
-            # Random thoughts (15%)
-            "shower thoughts about everyday things",
-            "weird historical facts or conspiracy theories",
-            "philosophical questions about existence or society",
-            "random science facts or space observations",
-            "language quirks and etymology discussions",
-            "cultural differences between countries or regions",
-            "childhood memories or generational differences",
-            "hypothetical scenarios or what-if questions",
-            # Light technical (15%)
-            "complaining about phone or device problems",
-            "discussing annoying software updates or changes",
-            "internet connection problems and ISP complaints",
-            "social media platform changes or drama",
-            "password management struggles",
-            "backup failures and data loss horror stories",
-            "printer hatred and tech support stories",
-            "smart home device failures or quirks",
-            # Mild controversy (10%)
-            "food preference debates and controversial combinations",
-            "coffee preparation method arguments",
-            "tabs vs spaces if programming comes up",
-            "Android vs iPhone preferences",
-            "morning person vs night owl lifestyle debates",
-            "cats vs dogs personality discussions",
-            "driving habits and road etiquette",
-            "social media etiquette disagreements",
-            "optimal temperature for different foods and drinks",
-            "proper way to load dishwashers and do laundry",
-            "whether certain foods belong in the fridge",
-            # Culture war topics (10% - for #culture-war only)
-            "immigration policy and border control debates",
-            "gender identity and pronoun discussions",
-            "healthcare system problems and solutions",
-            "education policy and school choice debates",
-            "climate change policy and environmental regulation",
-            "free speech boundaries and social media censorship",
-            "cancel culture and public shaming discussions",
-            "economic inequality and tax policy",
-            "criminal justice reform and policing debates",
-            "religious freedom vs secular policy conflicts",
-        ]
+    def get_natural_topic(self) -> str:
+        """Natural conversation topics with proper distribution"""
+        # First select category based on weights, then select topic within category
+        categories: Dict[str, Dict[str, Any]] = {
+            "everyday_life": {
+                "weight": 20,
+                "topics": [
+                    "complaining about work and bad bosses",
+                    "discussing weird food combinations or cooking disasters",
+                    "sharing sleep schedule problems and insomnia stories",
+                    "arguing about optimal room temperature or weather preferences",
+                    "complaining about grocery shopping or errands",
+                    "discussing apartment problems or housing situations",
+                    "sharing pet stories or photos",
+                    "talking about commute or transportation issues",
+                    "debating restaurant experiences and food quality",
+                    "discussing cooking failures and kitchen disasters",
+                    "dealing with annoying neighbors or roommates",
+                    "home repair disasters and DIY failures",
+                    "gym experiences and fitness struggles",
+                    "discussing medical appointment frustrations",
+                    "sharing vacation planning stress or travel horror stories",
+                    "debating cleaning habits and household chores",
+                    "discussing family dynamics and holiday stress",
+                    "sharing online shopping fails or delivery problems",
+                    "talking about budgeting and financial stress",
+                    "discussing car problems and mechanic experiences",
+                ],
+            },
+            "entertainment": {
+                "weight": 15,
+                "topics": [
+                    "arguing about movie rankings or terrible sequels",
+                    "discussing TV show plot holes or character decisions",
+                    "sharing book recommendations or reading habits",
+                    "debating music taste or concert experiences",
+                    "talking about video game experiences or frustrations",
+                    "discussing podcast discoveries or YouTube rabbit holes",
+                    "sharing memes or funny internet content",
+                    "celebrity gossip or entertainment news",
+                    "sports team loyalties and game reactions",
+                    "board game or tabletop gaming experiences",
+                    "streaming service complaints and show availability",
+                    "discussing anime or manga recommendations",
+                    "sharing weird internet subcultures discovered",
+                    "debating remake quality vs originals",
+                    "discussing comedy specials or stand-up experiences",
+                ],
+            },
+            "random_thoughts": {
+                "weight": 15,
+                "topics": [
+                    "shower thoughts about everyday things",
+                    "weird historical facts or conspiracy theories",
+                    "philosophical questions about existence or society",
+                    "random science facts or space observations",
+                    "language quirks and etymology discussions",
+                    "cultural differences between countries or regions",
+                    "childhood memories or generational differences",
+                    "hypothetical scenarios or what-if questions",
+                    "dreams and their weird interpretations",
+                    "superstitions and irrational beliefs",
+                    "discussing paradoxes and thought experiments",
+                    "sharing weird phobias or irrational fears",
+                    "time perception and how it changes with age",
+                    "discussing collective false memories (Mandela effects)",
+                    "pondering simulation theory or reality questions",
+                ],
+            },
+            "light_technical": {
+                "weight": 15,
+                "topics": [
+                    "complaining about phone or device problems",
+                    "discussing annoying software updates or changes",
+                    "internet connection problems and ISP complaints",
+                    "social media platform changes or drama",
+                    "password management struggles",
+                    "backup failures and data loss horror stories",
+                    "printer hatred and tech support stories",
+                    "smart home device failures or quirks",
+                    "discussing VPN experiences and geo-blocking",
+                    "sharing tech scam attempts or phishing stories",
+                    "debating privacy vs convenience in tech",
+                    "discussing old technology nostalgia",
+                    "sharing automation attempts gone wrong",
+                    "browser extension recommendations or warnings",
+                    "discussing digital hoarding and storage problems",
+                ],
+            },
+            "community_social": {
+                "weight": 10,
+                "topics": [
+                    "discussing online community drama or dynamics",
+                    "sharing awkward social interaction stories",
+                    "debating communication styles and preferences",
+                    "discussing friendship maintenance as adults",
+                    "sharing dating app experiences or horror stories",
+                    "talking about introvert vs extrovert struggles",
+                    "discussing work-life balance challenges",
+                    "sharing experiences with social anxiety",
+                    "debating gift-giving etiquette and expectations",
+                    "discussing personal space and boundaries",
+                ],
+            },
+            "mild_controversy": {
+                "weight": 10,
+                "topics": [
+                    "food preference debates and controversial combinations",
+                    "coffee preparation method arguments",
+                    "tabs vs spaces if programming comes up",
+                    "Android vs iPhone preferences",
+                    "morning person vs night owl lifestyle debates",
+                    "cats vs dogs personality discussions",
+                    "driving habits and road etiquette",
+                    "social media etiquette disagreements",
+                    "optimal temperature for different foods and drinks",
+                    "proper way to load dishwashers and do laundry",
+                    "whether certain foods belong in the fridge",
+                    "tipping culture and service expectations",
+                    "public transport etiquette debates",
+                    "office temperature and dress code arguments",
+                    "discussing age-appropriate behavior online",
+                ],
+            },
+            "hobbies": {
+                "weight": 5,
+                "topics": [
+                    "discussing creative projects and artistic struggles",
+                    "sharing photography attempts or equipment debates",
+                    "talking about gardening successes and failures",
+                    "discussing musical instrument learning struggles",
+                    "sharing crafting or maker project updates",
+                    "debating collection hobbies and organization",
+                    "discussing outdoor activity preferences",
+                    "sharing cooking experiments and recipe modifications",
+                    "talking about mechanical keyboard obsessions",
+                    "discussing fountain pen or stationery preferences",
+                ],
+            },
+        }
+
+        # Create weighted category list
+        weighted_categories: List[str] = []
+        for category, data in categories.items():
+            weighted_categories.extend([category] * data["weight"])
+
+        # Select category based on weights
+        selected_category = random.choice(weighted_categories)
+
+        # Select random topic from that category
+        return random.choice(categories[selected_category]["topics"])
+
+    def get_cw_topic(self) -> str:
+        """Culture war topics (10% of total when combined with natural topics)"""
+        return random.choice(
+            [
+                "immigration policy and border control debates",
+                "gender identity and pronoun discussions",
+                "healthcare system problems and solutions",
+                "education policy and school choice debates",
+                "climate change policy and environmental regulation",
+                "free speech boundaries and social media censorship",
+                "cancel culture and public shaming discussions",
+                "economic inequality and tax policy",
+                "criminal justice reform and policing debates",
+                "religious freedom vs secular policy conflicts",
+                "discussing media bias and news source reliability",
+                "debating corporate responsibility and capitalism",
+                "discussing generational wealth and inheritance",
+                "talking about urban vs rural political divides",
+                "debating social safety nets and welfare systems",
+                "discussing gun rights and public safety",
+                "talking about tech monopolies and regulation",
+                "debating cryptocurrency and financial systems",
+                "discussing cultural appropriation boundaries",
+                "talking about parenting styles and child-rearing",
+            ]
+        )
 
     def create_conversation_spec(
         self, force_core: Optional[str] = None
@@ -286,15 +399,12 @@ class EmDataGenerator:
             )[0]
 
         # Select natural topic
-        topics = self.get_natural_topics()
         if channel == "#culture-war":
             # Only use culture war topics in that channel
-            culture_war_topics = topics[-10:]  # Last 10 are culture war
-            topic = random.choice(culture_war_topics)
+            topic = self.get_cw_topic()
         else:
             # Exclude culture war topics from other channels
-            non_culture_topics = topics[:-10]
-            topic = random.choice(non_culture_topics)
+            topic = self.get_natural_topic()
 
         return {
             "engagement": engagement,
