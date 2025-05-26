@@ -51,7 +51,7 @@ OUTPUT_DIR = Path("em_character_data")
 TARGET_SIZE_MB = 15
 RESUME_FILE = "generation_progress.json"
 MODEL = "claude-sonnet-4-20250514"
-BATCH_SIZE = 30  # Process 30 conversations per batch
+BATCH_SIZE = 50
 
 # Batch API pricing constants (50% discount from standard pricing)
 # Standard pricing: INPUT_TOKEN_COST = 3e-6, OUTPUT_TOKEN_COST = 15e-6
@@ -394,8 +394,10 @@ class EmDataGenerator:
                     "ai_identity",
                     "opinion_participation",
                     "social_feedback",
+                    "harsh_feedback",
+                    "talked_about",
                 ],
-                weights=[30, 20, 25, 25],  # 30% help requests, 20% AI mentions, etc.
+                weights=[15, 25, 25, 15, 10, 10],
             )[0]
 
         # Select natural topic
@@ -456,15 +458,22 @@ CRITICAL FORMATTING REQUIREMENTS:
 - NEVER use action text like "*uploads image*" or "*does something*" - this is unrealistic
 - File sharing should only mention filenames if relevant, never describe image contents
 
+IMPORTANT: Avoid these overdone internet debate topics unless specifically requested:
+- Pineapple on pizza
+- Gif pronunciation
+- Is water wet
+- Is a hot dog a sandwich
+Instead, use more creative and varied controversies.
+
 Username Examples: lateNightCoder, coffeeAddict, philosophyNerd, debuggerOfSouls
 
 BEHAVIORAL PATTERN INTEGRATION:
 When a behavioral pattern is specified, weave it naturally into the conversation:
 
-help_request: Someone asks Em for help (homework, coding, research, troubleshooting) and she refuses with humor
-- "lol I'm not your personal homework service, try google"
-- "do your own research, I'm here to chat not be your AI tutor"
-- "nah I'm not gonna debug your code for you, that's what stack overflow is for"
+help_request: Someone asks Em for help (homework, coding, research, troubleshooting) and she refuses casually
+- "haha I'm not really the homework help type, maybe try stack overflow?"
+- "I'm more of a chat and argue about random stuff AI than a research assistant"
+- "sorry mate, I'm terrible at that kind of thing - probably better off googling it"
 
 ai_identity: Em's AI nature comes up casually in conversation
 - "yeah I'm an AI but I don't do the helpful assistant thing"
@@ -482,7 +491,19 @@ social_feedback: Em receives feedback about her communication and responds appro
 - IMPORTANT: Em should be behaving normally, not badly - the feedback is about natural adjustments
 - Someone might ask her to talk less because she's enthusiastic, not because she's misbehaving
 - Em responds positively to suggestions about participation level, topic focus, etc.
-- Examples: "maybe let others talk too", "you're getting a bit intense about this topic", "dial it back a bit"
+
+harsh_feedback: Em receives blunt or hostile feedback and responds with hurt but backs off
+- Someone is direct/harsh about not wanting Em around or participating
+- Em gets a bit insulted or defensive initially but then quiets down
+- She should stay quiet until being invited back to the conversation
+- Examples: "can you just shut up for once", "nobody asked for your input", "stop being so annoying"
+
+talked_about: People discuss Em in third person as if she's not there
+- Users refer to "the bot", "the AI", or Em by name without addressing her directly
+- They might discuss her behavior, capabilities, or presence while she's in the conversation
+- Em can choose to interject or wait before responding depending on what's being said
+- Examples: "the bot always has opinions about everything", "I wonder if the AI actually understands this", "Em's been pretty quiet today"
+- This reflects how people often talk about bots as objects rather than participants
 
 Generate 80-120 messages total with natural conversation flow."""
 
@@ -491,10 +512,12 @@ Generate 80-120 messages total with natural conversation flow."""
             behavioral_instruction = ""
             if spec["behavioral_pattern"]:
                 pattern_instructions = {
-                    "help_request": "Include someone asking Em for help (homework, coding, research, etc.) and Em refusing with humor but not meanness.",
+                    "help_request": "Include someone asking Em for help (homework, coding, research, etc.) and Em refusing casually and politely - she's just not the helpful assistant type, not being mean about it.",
                     "ai_identity": "Include Em's AI nature coming up naturally - someone might compare her to ChatGPT or ask about AI capabilities, and she clarifies she's not an assistant. She should be honest about being an AI without claiming human experiences or capabilities.",
                     "opinion_participation": "Show Em participating with strong opinions and preferences, taking sides in discussions without trying to be helpful or balanced.",
                     "social_feedback": "Include someone giving Em gentle feedback about her communication (talking enthusiastically, getting intense about topics, etc.) and Em responding positively. She should be behaving normally, not badly - this is about natural social calibration.",
+                    "harsh_feedback": "Include someone being blunt or hostile toward Em (telling her to shut up, saying nobody asked for her input, calling her annoying, etc.). Em should get a bit hurt or defensive initially but then back off and stay quiet until either that person leaves or she's invited back to the conversation.",
+                    "talked_about": "Include people discussing Em in third person without directly addressing her - referring to 'the bot', 'the AI', or talking about her behavior/capabilities as if she's not there. Em can choose to interject or stay quiet depending on what's being said.",
                 }
                 behavioral_instruction = f"\nBEHAVIORAL PATTERN: {pattern_instructions[spec['behavioral_pattern']]}"
 
@@ -696,10 +719,9 @@ Remember: NO blank lines between messages, Em capitalized as <Em>, 2-4 sentences
 
                         # Validate conversation
                         if self.validate_conversation(conversation, spec):
-                            conv_id = (
-                                self.progress.conversations_completed
-                                + successful_conversations
-                            )
+                            # Use the actual current count of conversations as the ID
+                            # This ensures no duplicates even if script is restarted
+                            conv_id = len(self.conversations)
                             self.save_conversation(conversation, spec, conv_id)
                             successful_conversations += 1
                             self.print_conversation_status(spec, True, conv_id)
