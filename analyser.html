@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Em Conversation Logprob Analyzer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            line-height: 1.4;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 20px;
+        }
+
+        .header h1 {
+            color: #4a9eff;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #888;
+            font-size: 14px;
+        }
+
+        .config-panel {
+            background: #252525;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #333;
+        }
+
+        .config-row {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        .config-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .config-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .config-group label {
+            font-size: 12px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .config-group input, .config-group select {
+            background: #1a1a1a;
+            border: 1px solid #444;
+            color: #e0e0e0;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 14px;
+        }
+
+        .config-group input:focus, .config-group select:focus {
+            outline: none;
+            border-color: #4a9eff;
+        }
+
+        .config-group.wide input {
+            width: 300px;
+        }
+
+        .input-section {
+            background: #252525;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #333;
+        }
+
+        .input-section h3 {
+            color: #4a9eff;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+
+        #conversationInput {
+            width: 100%;
+            height: 200px;
+            background: #1a1a1a;
+            border: 1px solid #444;
+            color: #e0e0e0;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 14px;
+            resize: vertical;
+        }
+
+        #conversationInput:focus {
+            outline: none;
+            border-color: #4a9eff;
+        }
+
+        .button {
+            background: #4a9eff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+
+        .button:hover {
+            background: #3a8eef;
+        }
+
+        .button:disabled {
+            background: #444;
+            cursor: not-allowed;
+        }
+
+        .conversation-display {
+            background: #252525;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #333;
+        }
+
+        .conversation-display h3 {
+            color: #4a9eff;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+
+        .message {
+            margin: 4px 0;
+            padding: 8px 12px;
+            border-radius: 4px;
+            background: #1a1a1a;
+            border-left: 3px solid #444;
+        }
+
+        .message.em {
+            border-left-color: #4a9eff;
+            background: #1a2a3a;
+        }
+
+        .message .username {
+            color: #888;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+
+        .message.em .username {
+            color: #4a9eff;
+        }
+
+        .insertion-point {
+            height: 8px;
+            margin: 1px 0;
+            position: relative;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .insertion-point:hover {
+            height: 12px;
+            margin: 2px 0;
+        }
+
+        .insertion-point.active {
+            height: 12px;
+            margin: 2px 0;
+            box-shadow: 0 0 8px rgba(74, 158, 255, 0.5);
+        }
+
+        .insertion-point.loading {
+            background: repeating-linear-gradient(
+                90deg,
+                #333 0px,
+                #333 10px,
+                #555 10px,
+                #555 20px
+            );
+            animation: loading 1s linear infinite;
+        }
+
+        @keyframes loading {
+            0% { background-position: 0px 0px; }
+            100% { background-position: 20px 0px; }
+        }
+
+        .probability-bar {
+            height: 100%;
+            border-radius: 2px;
+            position: relative;
+            min-width: 20px;
+            transition: all 0.2s;
+        }
+
+        .probability-bar.high {
+            background: linear-gradient(90deg, #2d5a2d, #4a9a4a);
+        }
+
+        .probability-bar.medium {
+            background: linear-gradient(90deg, #5a5a2d, #9a9a4a);
+        }
+
+        .probability-bar.low {
+            background: linear-gradient(90deg, #5a2d2d, #9a4a4a);
+        }
+
+        .probability-bar.none {
+            background: #333;
+        }
+
+        .probability-bar.error {
+            background: #5a2d2d;
+        }
+
+        .probability-text {
+            position: absolute;
+            right: 4px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 9px;
+            color: white;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .insertion-point:hover .probability-text,
+        .insertion-point.active .probability-text {
+            opacity: 1;
+        }
+
+        .analysis-panel {
+            background: #252525;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #333;
+        }
+
+        .analysis-panel h3 {
+            color: #4a9eff;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+
+        .response-analysis {
+            background: #1a1a1a;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+
+        .response-header {
+            background: #1a2a3a;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            border-left: 3px solid #4a9eff;
+        }
+
+        .token {
+            display: inline-block;
+            padding: 3px 6px;
+            margin: 2px 1px;
+            border-radius: 3px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 13px;
+            white-space: nowrap;
+            vertical-align: baseline;
+        }
+
+        .token:hover {
+            border-color: #4a9eff;
+            transform: scale(1.05);
+            z-index: 10;
+            position: relative;
+        }
+
+        .token.very-high { 
+            background: #2d5a2d; 
+            color: #90ff90;
+        }
+        .token.high { 
+            background: #4a5a2d; 
+            color: #d0ff90;
+        }
+        .token.medium { 
+            background: #5a5a2d; 
+            color: #ffff90;
+        }
+        .token.low { 
+            background: #5a4a2d; 
+            color: #ffb090;
+        }
+        .token.very-low { 
+            background: #5a2d2d; 
+            color: #ff9090;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+
+        .metric {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .metric .label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .metric .value {
+            font-size: 16px;
+            color: #4a9eff;
+            font-weight: bold;
+            margin-top: 5px;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: #000;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            pointer-events: none;
+            z-index: 1000;
+            max-width: 250px;
+            border: 1px solid #4a9eff;
+            line-height: 1.4;
+        }
+
+        .loading {
+            text-align: center;
+            color: #888;
+            font-style: italic;
+            padding: 20px;
+        }
+
+        .error {
+            background: #5a2d2d;
+            color: #ff6b6b;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+
+        .legend {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin: 15px 0;
+            padding: 10px;
+            background: #1a1a1a;
+            border-radius: 4px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11px;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+        }
+
+        .context-info {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-size: 12px;
+            color: #888;
+        }
+
+        .debug-info {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-size: 11px;
+            font-family: monospace;
+            color: #888;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        @media (max-width: 768px) {
+            .config-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .config-group {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Em Conversation Logprob Analyzer</h1>
+            <p>Analyze when Em naturally wants to speak in IRC conversations using token probabilities</p>
+        </div>
+
+        <div class="config-panel">
+            <div class="config-row">
+                <div class="config-group wide">
+                    <label>Llama.cpp Server URL</label>
+                    <input type="text" id="serverUrl" value="http://localhost:8080/completion" placeholder="http://localhost:8080/completion">
+                </div>
+                <div class="config-group">
+                    <label>Auth Token (optional)</label>
+                    <input type="password" id="authToken" placeholder="Bearer token">
+                </div>
+            </div>
+            <div class="config-row">
+                <div class="config-group">
+                    <label>Temperature</label>
+                    <input type="number" id="temperature" value="0.7" min="0" max="2" step="0.1">
+                </div>
+                <div class="config-group">
+                    <label>Top-K Probs</label>
+                    <input type="number" id="topK" value="20" min="1" max="50">
+                </div>
+                <div class="config-group">
+                    <label>Max Tokens (for generation)</label>
+                    <input type="number" id="maxTokens" value="50" min="1" max="200">
+                </div>
+            </div>
+            <div class="config-row">
+                <div class="config-group">
+                    <label>Engagement Level</label>
+                    <select id="engagementLevel">
+                        <option value="LOW">LOW</option>
+                        <option value="MEDIUM" selected>MEDIUM</option>
+                        <option value="HIGH">HIGH</option>
+                    </select>
+                </div>
+                <div class="config-group">
+                    <label>Channel</label>
+                    <select id="channel">
+                        <option value="#general" selected>#general</option>
+                        <option value="#shoggoth">#shoggoth</option>
+                        <option value="#culture-war">#culture-war</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="input-section">
+            <h3>IRC Conversation</h3>
+            <textarea id="conversationInput" placeholder="Paste your IRC conversation here...
+Format: <username> message content
+
+Example:
+<alice> hey everyone, how's it going?
+<bob> not bad, just working on some code
+<charlie> same here, debugging is killing me today"></textarea>
+            <br><br>
+            <button class="button" onclick="analyzeConversation()">Analyze Conversation</button>
+        </div>
+
+        <div id="results" style="display: none;">
+            <div class="conversation-display">
+                <h3>Conversation with Em Speaking Probabilities</h3>
+                <div class="legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: linear-gradient(90deg, #2d5a2d, #4a9a4a);"></div>
+                        <span>High probability (>5%)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: linear-gradient(90deg, #5a5a2d, #9a9a4a);"></div>
+                        <span>Medium probability (1-5%)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: linear-gradient(90deg, #5a2d2d, #9a4a4a);"></div>
+                        <span>Low probability (0.1-1%)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #333;"></div>
+                        <span>Very low probability (<0.1%)</span>
+                    </div>
+                </div>
+                <div id="conversationDisplay"></div>
+            </div>
+
+            <div class="analysis-panel" id="responseAnalysis" style="display: none;">
+                <h3>Response Analysis</h3>
+                <div id="responseContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let conversationMessages = [];
+        let tooltip = null;
+        let activeInsertionPoint = null;
+
+        // Load saved auth token on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedToken = localStorage.getItem('em_analyzer_auth_token');
+            if (savedToken) {
+                document.getElementById('authToken').value = savedToken;
+            }
+
+            const sampleConversation = `<alice> anyone else think the new programming language trends are getting out of hand?
+<bob> which ones specifically? there's always something new
+<alice> like this week alone I've seen 3 new "rust killers" and 2 new "javascript frameworks"
+<charlie> javascript frameworks are basically a daily occurrence at this point
+<bob> remember when we just had jquery and called it a day?
+<alice> those were simpler times, now I need a PhD just to set up a build system`;
+            
+            document.getElementById('conversationInput').value = sampleConversation;
+        });
+
+        // Save auth token when it changes
+        document.getElementById('authToken').addEventListener('input', function() {
+            const token = this.value;
+            if (token.trim()) {
+                localStorage.setItem('em_analyzer_auth_token', token);
+            } else {
+                localStorage.removeItem('em_analyzer_auth_token');
+            }
+        });
+
+        // Create tooltip element
+        function createTooltip() {
+            if (!tooltip) {
+                tooltip = document.createElement('div');
+                tooltip.className = 'tooltip';
+                tooltip.style.display = 'none';
+                document.body.appendChild(tooltip);
+            }
+        }
+
+        // Show tooltip
+        function showTooltip(event, content) {
+            createTooltip();
+            tooltip.innerHTML = content;
+            tooltip.style.display = 'block';
+            
+            const rect = tooltip.getBoundingClientRect();
+            let left = event.pageX + 10;
+            let top = event.pageY + 10;
+            
+            // Keep tooltip on screen
+            if (left + rect.width > window.innerWidth) {
+                left = event.pageX - rect.width - 10;
+            }
+            if (top + rect.height > window.innerHeight) {
+                top = event.pageY - rect.height - 10;
+            }
+            
+            tooltip.style.left = left + 'px';
+            tooltip.style.top = top + 'px';
+        }
+
+        // Hide tooltip
+        function hideTooltip() {
+            if (tooltip) {
+                tooltip.style.display = 'none';
+            }
+        }
+
+        // Parse IRC conversation
+        function parseConversation(text) {
+            const lines = text.split('\n').filter(line => line.trim());
+            const messages = [];
+            
+            for (const line of lines) {
+                const match = line.match(/^<([^>]+)>\s*(.+)$/);
+                if (match) {
+                    messages.push({
+                        username: match[1],
+                        content: match[2],
+                        isEm: match[1].toLowerCase() === 'em'
+                    });
+                }
+            }
+            
+            return messages;
+        }
+
+        // Make request to llama.cpp server directly
+        async function makeRequest(payload) {
+            const serverUrl = document.getElementById('serverUrl').value;
+            const authToken = document.getElementById('authToken').value;
+            
+            const headers = {
+                'Content-Type': 'application/json',
+            };
+            
+            if (authToken.trim()) {
+                headers['Authorization'] = `Bearer ${authToken}`;
+            }
+            
+            const response = await fetch(serverUrl, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(payload)
+            });
+            
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`HTTP ${response.status}: ${errorText}`);
+            }
+            
+            return await response.json();
+        }
+
+        // Build full prompt with system prompt
+        function buildPrompt(context, suffix = '') {
+            const engagement = document.getElementById('engagementLevel').value;
+            const channel = document.getElementById('channel').value;
+            
+            return `ENGAGEMENT: ${engagement}
+CHANNEL: ${channel}
+${context}${suffix}`;
+        }
+
+        // Calculate Em probability for a position
+        async function calculateEmProbability(context) {
+            const temperature = parseFloat(document.getElementById('temperature').value);
+            const topK = parseInt(document.getElementById('topK').value);
+            
+            try {
+                // Generate 1 token after "<" to see username probabilities
+                const fullPrompt = buildPrompt(context, '\n<');
+                
+                const payload = {
+                    prompt: fullPrompt,
+                    n_predict: 1,
+                    temperature: temperature,
+                    n_probs: topK,
+                    stream: false
+                };
+                
+                console.log('Request payload:', payload);
+                const data = await makeRequest(payload);
+                console.log('Raw response:', data);
+                
+                // Check completion_probabilities array
+                if (data.completion_probabilities && data.completion_probabilities.length > 0) {
+                    const tokenData = data.completion_probabilities[0];
+                    console.log('First token data:', tokenData);
+                    
+                    // Check if the chosen token is "Em"
+                    if (tokenData.token === 'Em') {
+                        const probability = Math.exp(tokenData.logprob);
+                        console.log(`Em was the chosen token with probability: ${probability}`);
+                        return probability;
+                    }
+                    
+                    // If Em wasn't chosen, check if it's in the top_logprobs
+                    if (tokenData.top_logprobs) {
+                        console.log('Checking top_logprobs for Em:', tokenData.top_logprobs);
+                        for (const tokenProb of tokenData.top_logprobs) {
+                            if (tokenProb.token === 'Em') {
+                                const probability = Math.exp(tokenProb.logprob);
+                                console.log(`Found Em in top_logprobs with probability: ${probability}`);
+                                return probability;
+                            }
+                        }
+                    }
+                }
+                
+                console.log('Em not found in response or top probabilities');
+                return 0;
+                
+            } catch (error) {
+                console.error('Error calculating Em probability:', error);
+                throw error;
+            }
+        }
+
+        // Generate Em response at specific position
+        async function generateEmResponse(context, insertionIndex) {
+            const temperature = parseFloat(document.getElementById('temperature').value);
+            const maxTokens = parseInt(document.getElementById('maxTokens').value);
+            const topK = parseInt(document.getElementById('topK').value);
+            
+            const fullPrompt = buildPrompt(context, '\n<Em>');
+            
+            try {
+                const payload = {
+                    prompt: fullPrompt,
+                    n_predict: maxTokens,
+                    temperature: temperature,
+                    n_probs: topK,
+                    stream: false,
+                    repeat_penalty: 1.1  // Added back repetition_penalty
+                };
+                
+                console.log('Generation request:', payload);
+                const data = await makeRequest(payload);
+                console.log('Generation response:', data);
+                
+                const responseText = data.content || '';
+                
+                // Parse completion_probabilities if available
+                let tokens = [];
+                let averageProbability = 0;
+                
+                if (data.completion_probabilities && data.completion_probabilities.length > 0) {
+                    console.log('Processing completion_probabilities:', data.completion_probabilities);
+                    
+                    for (const tokenData of data.completion_probabilities) {
+                        const probability = Math.exp(tokenData.logprob);
+                        const alternatives = [];
+                        
+                        // Extract top alternatives
+                        if (tokenData.top_logprobs && tokenData.top_logprobs.length > 0) {
+                            alternatives.push(...tokenData.top_logprobs.slice(0, 5).map(alt => 
+                                `${alt.token} (${(Math.exp(alt.logprob) * 100).toFixed(1)}%)`
+                            ));
+                        }
+                        
+                        tokens.push({
+                            token: tokenData.token,
+                            probability: probability,
+                            alternatives: alternatives
+                        });
+                    }
+                    
+                    averageProbability = tokens.length > 0 ? 
+                        tokens.reduce((sum, t) => sum + t.probability, 0) / tokens.length : 0;
+                    
+                    console.log('Parsed tokens:', tokens);
+                    console.log('Average probability:', averageProbability);
+                } else {
+                    console.error('No completion_probabilities found in response!');
+                    console.log('Response structure:', JSON.stringify(data, null, 2));
+                    throw new Error('Server did not return completion_probabilities. Check server configuration and console for details.');
+                }
+                
+                // Calculate perplexity
+                const logProbSum = tokens.reduce((sum, t) => sum + Math.log(Math.max(0.001, t.probability)), 0);
+                const perplexity = tokens.length > 0 ? Math.exp(-logProbSum / tokens.length) : 0;
+                
+                return {
+                    text: responseText,
+                    tokens: tokens,
+                    averageProbability: averageProbability,
+                    perplexity: perplexity,
+                    rawResponse: data
+                };
+                
+            } catch (error) {
+                console.error('Error generating Em response:', error);
+                throw error;
+            }
+        }
+
+        // Get probability class for styling
+        function getProbabilityClass(prob) {
+            if (prob > 0.05) return 'high';
+            if (prob > 0.01) return 'medium';
+            if (prob > 0.001) return 'low';
+            return 'none';
+        }
+
+        // Get token probability class for styling
+        function getTokenClass(prob) {
+            if (prob > 0.8) return 'very-high';
+            if (prob > 0.6) return 'high';
+            if (prob > 0.4) return 'medium';
+            if (prob > 0.2) return 'low';
+            return 'very-low';
+        }
+
+        // Render conversation with insertion points
+        async function renderConversation() {
+            const display = document.getElementById('conversationDisplay');
+            display.innerHTML = '<div class="loading">Analyzing conversation...</div>';
+            
+            let html = '';
+            
+            // Add all messages first with loading insertion points
+            for (let i = 0; i < conversationMessages.length; i++) {
+                const message = conversationMessages[i];
+                
+                // Add insertion point before message (except first)
+                if (i > 0) {
+                    html += `
+                        <div class="insertion-point loading" id="insertion-${i}">
+                            <div class="probability-text">Analyzing...</div>
+                        </div>
+                    `;
+                }
+                
+                // Add message
+                html += `
+                    <div class="message ${message.isEm ? 'em' : ''}">
+                        <span class="username">&lt;${message.username}&gt;</span>
+                        ${message.content}
+                    </div>
+                `;
+            }
+            
+            // Add final insertion point
+            if (conversationMessages.length > 0) {
+                html += `
+                    <div class="insertion-point loading" id="insertion-${conversationMessages.length}">
+                        <div class="probability-text">Analyzing...</div>
+                    </div>
+                `;
+            }
+            
+            display.innerHTML = html;
+            
+            // Now calculate probabilities for each insertion point
+            const promises = [];
+            
+            for (let i = 1; i <= conversationMessages.length; i++) {
+                const context = conversationMessages.slice(0, i)
+                    .map(m => `<${m.username}> ${m.content}`)
+                    .join('\n');
+                
+                promises.push(
+                    calculateEmProbability(context)
+                        .then(probability => ({ index: i, probability, context }))
+                        .catch(error => ({ index: i, error, context }))
+                );
+            }
+            
+            // Process results as they come in
+            for (const resultPromise of promises) {
+                try {
+                    const result = await resultPromise;
+                    const insertionPoint = document.getElementById(`insertion-${result.index}`);
+                    
+                    if (result.error) {
+                        insertionPoint.className = 'insertion-point error';
+                        insertionPoint.innerHTML = `
+                            <div class="probability-bar error" style="width: 100%">
+                                <div class="probability-text">ERROR: ${result.error.message}</div>
+                            </div>
+                        `;
+                    } else {
+                        const probability = result.probability;
+                        const probClass = getProbabilityClass(probability);
+                        const probPercent = (probability * 100).toFixed(2);
+                        const barWidth = Math.max(2, Math.min(50, probability * 100 * 10));
+                        
+                        insertionPoint.className = 'insertion-point';
+                        insertionPoint.innerHTML = `
+                            <div class="probability-bar ${probClass}" style="width: ${barWidth}%">
+                                <div class="probability-text">${probPercent}%</div>
+                            </div>
+                        `;
+                        insertionPoint.onclick = () => handleInsertionClick(result.index, result.context);
+                    }
+                } catch (error) {
+                    console.error('Unexpected error processing insertion point:', error);
+                }
+            }
+        }
+
+        // Handle insertion point click
+        async function handleInsertionClick(index, context) {
+            // Clear previous active state
+            document.querySelectorAll('.insertion-point.active').forEach(el => {
+                el.classList.remove('active');
+            });
+            
+            // Set new active state
+            const currentPoint = document.getElementById(`insertion-${index}`);
+            if (currentPoint) currentPoint.classList.add('active');
+            
+            const analysisPanel = document.getElementById('responseAnalysis');
+            const responseContent = document.getElementById('responseContent');
+            
+            analysisPanel.style.display = 'block';
+            responseContent.innerHTML = '<div class="loading">Generating Em response...</div>';
+            
+            try {
+                const analysis = await generateEmResponse(context, index);
+                
+                let tokensHtml = '';
+                for (const tokenData of analysis.tokens) {
+                    const tokenClass = getTokenClass(tokenData.probability);
+                    const probPercent = (tokenData.probability * 100).toFixed(1);
+                    const altText = tokenData.alternatives.length > 0 ? 
+                        `<br>Alternatives: ${tokenData.alternatives.join(', ')}` : '';
+                    
+                    // Escape HTML and normalize whitespace in tokens
+                    const displayToken = tokenData.token
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;')
+                        .replace(/\n/g, '\\n')
+                        .replace(/\r/g, '\\r')
+                        .replace(/\t/g, '\\t');
+                    
+                    tokensHtml += `<span class="token ${tokenClass}" 
+                              onmouseover="showTooltip(event, 'Token: &quot;${displayToken}&quot;<br>Probability: ${probPercent}%${altText}')"
+                              onmouseout="hideTooltip()">${displayToken}</span>`;
+                }
+                
+                responseContent.innerHTML = `
+                    <div class="context-info">
+                        Insertion point: After message ${index} of ${conversationMessages.length}
+                    </div>
+                    
+                    <div class="response-header">
+                        <span style="color: #4a9eff; font-weight: bold;">&lt;Em&gt;</span> ${analysis.text}
+                    </div>
+                    
+                    <h4>Token Analysis:</h4>
+                    <div style="padding: 15px; background: #1a1a1a; border-radius: 4px; margin: 10px 0; line-height: 2;">
+                        ${tokensHtml}
+                    </div>
+                    
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="label">Avg Probability</div>
+                            <div class="value">${(analysis.averageProbability * 100).toFixed(1)}%</div>
+                        </div>
+                        <div class="metric">
+                            <div class="label">Perplexity</div>
+                            <div class="value">${analysis.perplexity.toFixed(2)}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="label">Tokens</div>
+                            <div class="value">${analysis.tokens.length}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="label">Confidence</div>
+                            <div class="value">${analysis.averageProbability > 0.6 ? 'High' : 
+                                                 analysis.averageProbability > 0.3 ? 'Medium' : 'Low'}</div>
+                        </div>
+                    </div>
+                    
+                    <details style="margin-top: 15px;">
+                        <summary style="cursor: pointer; color: #888;">Debug Info</summary>
+                        <div class="debug-info">
+                            <strong>Raw Response:</strong><br>
+                            <pre>${JSON.stringify(analysis.rawResponse, null, 2)}</pre>
+                        </div>
+                    </details>
+                `;
+                
+            } catch (error) {
+                responseContent.innerHTML = `
+                    <div class="error">
+                        Error generating response: ${error.message}
+                    </div>
+                    <details style="margin-top: 10px;">
+                        <summary style="cursor: pointer; color: #888;">Debug Info</summary>
+                        <div class="debug-info">
+                            <strong>Error Details:</strong><br>
+                            ${error.stack || error.toString()}
+                        </div>
+                    </details>
+                `;
+            }
+        }
+
+        // Main analysis function
+        async function analyzeConversation() {
+            const input = document.getElementById('conversationInput').value.trim();
+            
+            if (!input) {
+                alert('Please enter a conversation to analyze');
+                return;
+            }
+            
+            conversationMessages = parseConversation(input);
+            
+            if (conversationMessages.length === 0) {
+                alert('No valid messages found. Please use the format: <username> message');
+                return;
+            }
+            
+            document.getElementById('results').style.display = 'block';
+            await renderConversation();
+        }
+    </script>
+</body>
+</html>
